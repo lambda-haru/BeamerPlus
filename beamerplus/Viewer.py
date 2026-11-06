@@ -1,15 +1,17 @@
+import os
 import time
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QTimer
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QTimer, QUrl
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QGraphicsPathItem, QGraphicsEllipseItem, QGraphicsSimpleTextItem
 )
 from PySide6.QtGui import (
-    QPixmap, QPainter, QResizeEvent, QKeyEvent, QColor, QPen,
-    QPainterPath, QRadialGradient, QBrush, QFont
+    QPixmap, QPainter, QResizeEvent, QKeyEvent, QMouseEvent, QColor, QPen,
+    QPainterPath, QRadialGradient, QBrush, QFont, QDesktopServices
 )
 
 from beamerplus.DrawingModel import PresentationController, Stroke, TextItem, create_smooth_path
+from beamerplus.PdfReader import PdfLink
 
 # スライド短辺に対するポインタ半径の比率 (視認性の高い大きめのレーザーポインタ)
 POINTER_RADIUS_RATIO = 0.018
@@ -19,10 +21,52 @@ class ViewerGraphicsView(QGraphicsView):
     def __init__(self, viewer: "Viewer", *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.viewer = viewer
+        self.setMouseTracking(True)
 
     def drawForeground(self, painter: QPainter, rect: QRectF):
         super().drawForeground(painter, rect)
         self.viewer.draw_trail(painter, rect)
+
+    def _get_normalized_pos(self, view_pos) -> tuple[float, float] | None:
+        if not self.viewer.page_pixmap or self.viewer.page_pixmap.isNull():
+            return None
+        pw = float(self.viewer.page_pixmap.width())
+        ph = float(self.viewer.page_pixmap.height())
+        if pw <= 0 or ph <= 0:
+            return None
+        scene_pos = self.mapToScene(view_pos)
+        nx = scene_pos.x() / pw
+        ny = scene_pos.y() / ph
+        if 0.0 <= nx <= 1.0 and 0.0 <= ny <= 1.0:
+            return (nx, ny)
+        return None
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        norm = self._get_normalized_pos(event.position().toPoint())
+        if norm:
+            link = self.viewer._find_link_at(norm)
+            if link:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.BackButton:
+            if self.viewer.controller and self.viewer.controller.can_jump_back:
+                self.viewer.controller.jump_back()
+                return
+
+        norm = self._get_normalized_pos(event.position().toPoint())
+        if norm and event.button() == Qt.MouseButton.LeftButton:
+            link = self.viewer._find_link_at(norm)
+            if link:
+                self.viewer._execute_link(link)
+                return
+
+        super().mousePressEvent(event)
 
 
 class Viewer(QMainWindow):
@@ -33,6 +77,7 @@ class Viewer(QMainWindow):
 
         self.setWindowTitle("BeamerPlus プロジェクタ")
         self.controller = controller
+        self.links: list[PdfLink] = []
 
         self.graphics_view = ViewerGraphicsView(self)
         self.setCentralWidget(self.graphics_view)
@@ -534,6 +579,37 @@ class Viewer(QMainWindow):
     def blank_screen(self):
         self.toggle_blank()
 
+    def set_links(self, links: list[PdfLink]):
+        self.links = list(links) if links else []
+
+    def _find_link_at(self, norm: tuple[float, float]) -> PdfLink | None:
+        if not self.links or (self.controller and self.controller.is_sketchbook):
+            return None
+        nx, ny = norm
+        for l in self.links:
+            x0, y0, x1, y1 = l.rect
+            if x0 <= nx <= x1 and y0 <= ny <= y1:
+                return l
+        return None
+
+    def _execute_link(self, link: PdfLink):
+        if link.page is not None:
+            if self.controller:
+                self.controller.jump_to_page(link.page)
+        elif link.uri:
+            try:
+                QDesktopServices.openUrl(QUrl(link.uri))
+            except Exception:
+                pass
+        elif link.file:
+            try:
+                if os.path.exists(link.file):
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(link.file)))
+                else:
+                    QDesktopServices.openUrl(QUrl(link.file))
+            except Exception:
+                pass
+
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
         if key in (Qt.Key.Key_F5, Qt.Key.Key_F11):
@@ -548,6 +624,10 @@ class Viewer(QMainWindow):
         elif key == Qt.Key.Key_H:
             if self.controller:
                 self.controller.toggle_sketch_visibility()
+        elif (key == Qt.Key.Key_Left and event.modifiers() & Qt.KeyboardModifier.AltModifier) or key in (Qt.Key.Key_Back, Qt.Key.Key_Backspace):
+            if self.controller and self.controller.can_jump_back:
+                self.controller.jump_back()
+                return
         elif self.controller:
             if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self.controller.next_page()

@@ -1,13 +1,16 @@
+import os
 import math
 import time
-from PySide6.QtCore import Qt, QPointF, QRectF, QEvent, QSize, QTimer
+from PySide6.QtCore import Qt, QPointF, QRectF, QEvent, QSize, QTimer, QUrl
 from PySide6.QtWidgets import QWidget, QLineEdit
 from PySide6.QtGui import (
     QPixmap, QPainter, QPaintEvent, QMouseEvent, QTabletEvent,
-    QPointingDevice, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QFont
+    QPointingDevice, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QFont,
+    QDesktopServices
 )
 
 from beamerplus.DrawingModel import PresentationController, Stroke, TextItem, create_smooth_path
+from beamerplus.PdfReader import PdfLink
 
 
 class SlideCanvas(QWidget):
@@ -62,6 +65,42 @@ class SlideCanvas(QWidget):
 
         # 高品質縮小キャッシュ（面積平均 SmoothTransformation & Retina/HiDPI 対応）
         self._cached_scaled_pixmap: QPixmap | None = None
+
+        # ハイパーリンク情報
+        self.links: list[PdfLink] = []
+        self.hovered_link: PdfLink | None = None
+
+    def set_links(self, links: list[PdfLink]):
+        self.links = list(links) if links else []
+        self.hovered_link = None
+        self.update()
+
+    def _find_link_at(self, norm: tuple[float, float]) -> PdfLink | None:
+        if not self.links or self.controller.is_sketchbook:
+            return None
+        nx, ny = norm
+        for l in self.links:
+            x0, y0, x1, y1 = l.rect
+            if x0 <= nx <= x1 and y0 <= ny <= y1:
+                return l
+        return None
+
+    def _execute_link(self, link: PdfLink):
+        if link.page is not None:
+            self.controller.jump_to_page(link.page)
+        elif link.uri:
+            try:
+                QDesktopServices.openUrl(QUrl(link.uri))
+            except Exception:
+                pass
+        elif link.file:
+            try:
+                if os.path.exists(link.file):
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(link.file)))
+                else:
+                    QDesktopServices.openUrl(QUrl(link.file))
+            except Exception:
+                pass
 
     def set_pixmap(self, pixmap: QPixmap | None):
         if self.text_input.isVisible():
@@ -399,7 +438,11 @@ class SlideCanvas(QWidget):
                 if event.button() == Qt.MouseButton.RightButton:
                     self.controller.prev_page()
                 else:
-                    self.controller.next_page()
+                    link = self._find_link_at(norm)
+                    if link:
+                        self._execute_link(link)
+                    else:
+                        self.controller.next_page()
             event.accept()
             return
 
@@ -416,6 +459,12 @@ class SlideCanvas(QWidget):
     # 通常マウス操作
     # ==========================================
     def mousePressEvent(self, event: QMouseEvent):
+        # マウスの戻るボタン (BackButton) でジャンプ元に戻る
+        if event.button() == Qt.MouseButton.BackButton:
+            if self.controller.can_jump_back:
+                self.controller.jump_back()
+                return
+
         norm = self._pos_to_normalized(event.position())
 
         # 既存テキスト入力があり、かつテキストツール以外をクリックした場合は確定
@@ -429,6 +478,14 @@ class SlideCanvas(QWidget):
 
         if event.button() == Qt.MouseButton.LeftButton:
             tool = self.controller.current_tool
+            # リンククリック判定 (通常ハンドモード、または Ctrl/Cmd 押下時)
+            is_ctrl_or_cmd = bool(event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier))
+            if tool == "hand" or is_ctrl_or_cmd:
+                link = self._find_link_at(norm)
+                if link:
+                    self._execute_link(link)
+                    return
+
             if tool == "text":
                 self._start_text_input(norm)
                 return
@@ -497,16 +554,32 @@ class SlideCanvas(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent):
         norm = self._pos_to_normalized(event.position())
         tool = self.controller.current_tool
+        is_ctrl_or_cmd = bool(event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier))
 
         if norm:
+            # リンクホバー検出 (ハンドモード、または Ctrl/Cmd 押下時)
+            link = self._find_link_at(norm) if (tool == "hand" or is_ctrl_or_cmd) else None
+            if link is not None:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+                if self.hovered_link != link:
+                    self.hovered_link = link
+                    self.update()
+            else:
+                if self.hovered_link is not None:
+                    self.hovered_link = None
+                    self.update()
+
             if tool == "pointer":
                 is_down = bool(event.buttons() & Qt.MouseButton.LeftButton) or self.is_pointer_down
                 self.controller.update_pointer(norm[0], norm[1], True, is_down=is_down)
-                self.setCursor(Qt.CursorShape.ArrowCursor)
+                if link is None:
+                    self.setCursor(Qt.CursorShape.ArrowCursor)
             elif tool == "text":
-                self.setCursor(Qt.CursorShape.IBeamCursor)
+                if link is None:
+                    self.setCursor(Qt.CursorShape.IBeamCursor)
             elif tool == "eraser":
-                self.setCursor(Qt.CursorShape.CrossCursor)
+                if link is None:
+                    self.setCursor(Qt.CursorShape.CrossCursor)
                 if event.buttons() & Qt.MouseButton.LeftButton:
                     rect = self._get_slide_rect()
                     aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
@@ -516,7 +589,8 @@ class SlideCanvas(QWidget):
                 self.hover_pos = norm
                 self.update()
             elif tool in ("pen", "highlighter"):
-                self.setCursor(Qt.CursorShape.CrossCursor)
+                if link is None:
+                    self.setCursor(Qt.CursorShape.CrossCursor)
                 if event.buttons() & Qt.MouseButton.LeftButton:
                     if self.controller.is_line_mode:
                         snapped = self._snap_line_endpoint(norm)
@@ -528,8 +602,12 @@ class SlideCanvas(QWidget):
                     self.hover_pos = norm
                     self.update()
             else:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
+                if link is None:
+                    self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
+            if self.hovered_link is not None:
+                self.hovered_link = None
+                self.update()
             if tool == "pointer":
                 self.is_pointer_down = False
                 self.controller.update_pointer(0, 0, False, is_down=False)
@@ -552,6 +630,8 @@ class SlideCanvas(QWidget):
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event):
+        if self.hovered_link is not None:
+            self.hovered_link = None
         if self.controller.current_tool == "pointer":
             self.is_pointer_down = False
             self.controller.update_pointer(0, 0, False, is_down=False)
@@ -589,6 +669,19 @@ class SlideCanvas(QWidget):
             painter.setPen(QColor("#666666"))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "スライドが読み込まれていません")
             return
+
+        # ハイパーリンクのホバーハイライト描画
+        if self.hovered_link and not self.controller.is_sketchbook:
+            lx0, ly0, lx1, ly1 = self.hovered_link.rect
+            hl_rect = QRectF(
+                rect.left() + lx0 * rect.width(),
+                rect.top() + ly0 * rect.height(),
+                (lx1 - lx0) * rect.width(),
+                (ly1 - ly0) * rect.height()
+            )
+            painter.setPen(QPen(QColor(0, 122, 204, 160), 1.2))
+            painter.setBrush(QBrush(QColor(0, 122, 204, 38)))
+            painter.drawRoundedRect(hl_rect, 2.0, 2.0)
 
         # ストローク・テキスト描画（スケッチが表示状態の時のみ）
         base_dim = min(rect.width(), rect.height())

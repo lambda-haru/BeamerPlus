@@ -76,11 +76,13 @@ class SimpleView(QWidget):
         self.controller.eraser_mode_changed.connect(self._on_eraser_mode_changed)
         self.controller.sketch_visibility_changed.connect(self._on_sketch_visibility_changed)
         self.controller.blank_state_changed.connect(self._on_blank_state_changed)
+        self.controller.jump_history_changed.connect(self.btn_jump_back.setEnabled)
 
         # 初期表示の更新
         self._on_tool_changed(self.controller.current_tool)
         self._on_eraser_mode_changed(self.controller.eraser_mode)
         self._on_sketch_visibility_changed(self.controller.is_sketch_visible)
+        self.btn_jump_back.setEnabled(self.controller.can_jump_back)
 
     def _create_toolbar(self) -> QWidget:
         bar = QFrame()
@@ -218,6 +220,14 @@ class SimpleView(QWidget):
 
         bar_layout.addStretch()
 
+        # ジャンプ復帰ボタン
+        self.btn_jump_back = QPushButton("↩")
+        self.btn_jump_back.setToolTip("直前のスライドに戻る (Alt+← / Backspace)")
+        self.btn_jump_back.setFixedWidth(32)
+        self.btn_jump_back.setEnabled(False)
+        self.btn_jump_back.clicked.connect(self.controller.jump_back)
+        bar_layout.addWidget(self.btn_jump_back)
+
         # ページ送りボタン
         self.btn_prev = QPushButton("◀ 前へ")
         self.btn_prev.clicked.connect(self.controller.prev_page)
@@ -236,7 +246,7 @@ class SimpleView(QWidget):
         for widget in (
             self.btn_pointer, self.btn_pen, self.btn_highlighter, self.btn_text, self.btn_eraser,
             self.btn_eraser_mode, self.btn_line, self.btn_color, self.size_slider,
-            self.btn_clear, self.btn_visibility, self.btn_save, self.btn_prev, self.btn_next
+            self.btn_clear, self.btn_visibility, self.btn_save, self.btn_jump_back, self.btn_prev, self.btn_next
         ):
             widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
@@ -374,6 +384,9 @@ class SimpleView(QWidget):
 
     def set_pixmap(self, pixmap: QPixmap | None):
         self.canvas.set_pixmap(pixmap)
+
+    def set_links(self, links: list):
+        self.canvas.set_links(links)
 
     def update_page_info(
         self,

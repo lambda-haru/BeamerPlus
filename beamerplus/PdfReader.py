@@ -57,6 +57,16 @@ def _decode_page_label(label: str) -> str:
 
 
 @dataclass
+class PdfLink:
+    kind: int                                # pymupdf.LINK_GOTO (1), LINK_URI (2), LINK_LAUNCH (3), LINK_NAMED (4), LINK_GOTOR (5)
+    rect: tuple[float, float, float, float]  # (norm_x0, norm_y0, norm_x1, norm_y1) normalized in [0.0, 1.0] relative to visible slide
+    page: int | None = None                  # 0-based target page index
+    uri: str | None = None                   # Target URI / URL
+    file: str | None = None                  # Target file path
+    tooltip: str = ""                        # Tooltip string
+
+
+@dataclass
 class PageGroup:
     group_index: int
     label: str
@@ -142,6 +152,7 @@ class PdfReader:
                 self.notes = {}
 
         self._image_cache: dict[tuple[int, int, bool], QPixmap] = {}
+        self._page_links_cache: dict[tuple[int, bool], list[PdfLink]] = {}
 
         # しおり（目次）の抽出: [(lvl, title, page_idx), ...]
         self.toc: list[tuple[int, str, int]] = []
@@ -332,6 +343,129 @@ class PdfReader:
 
     def clear_cache(self):
         self._image_cache.clear()
+        self._page_links_cache.clear()
+
+    def get_page_links(self, index: str | int, auto_crop: bool = True) -> list[PdfLink]:
+        idx = self._resolve_index(index)
+        if idx is None:
+            return []
+
+        cache_key = (idx, auto_crop)
+        if cache_key in self._page_links_cache:
+            return self._page_links_cache[cache_key]
+
+        page = self.document[idx]
+        raw_links = page.get_links()
+        result: list[PdfLink] = []
+
+        rect = page.rect
+        pw = float(rect.width)
+        ph = float(rect.height)
+        if pw <= 0 or ph <= 0:
+            return []
+
+        # 2画面レイアウト判定
+        is_dual_horizontal = auto_crop and (pw > ph * 2.0)
+        is_dual_vertical = auto_crop and (ph > pw * 1.1)
+
+        clip_w = pw / 2.0 if is_dual_horizontal else pw
+        clip_h = ph / 2.0 if is_dual_vertical else ph
+
+        for l in raw_links:
+            from_rect = l.get("from")
+            if from_rect is None:
+                continue
+
+            rx0 = float(from_rect.x0)
+            ry0 = float(from_rect.y0)
+            rx1 = float(from_rect.x1)
+            ry1 = float(from_rect.y1)
+
+            # 2画面（スライド＋ノート）でノート領域にはみ出している場合の処理
+            if is_dual_horizontal:
+                if rx0 >= clip_w:
+                    # ノート領域にあるリンクはスライド用には除外
+                    continue
+                rx1 = min(rx1, clip_w)
+            elif is_dual_vertical:
+                if ry0 >= clip_h:
+                    continue
+                ry1 = min(ry1, clip_h)
+
+            norm_x0 = max(0.0, min(1.0, rx0 / clip_w))
+            norm_y0 = max(0.0, min(1.0, ry0 / clip_h))
+            norm_x1 = max(0.0, min(1.0, rx1 / clip_w))
+            norm_y1 = max(0.0, min(1.0, ry1 / clip_h))
+
+            # 矩形の幅・高さがゼロまたは反転している場合はスキップ
+            if norm_x1 <= norm_x0 or norm_y1 <= norm_y0:
+                continue
+
+            kind = l.get("kind", 0)
+            target_page = l.get("page")
+            target_uri = l.get("uri")
+            target_file = l.get("file")
+            tooltip = ""
+
+            # 内部ページジャンプ
+            if kind in (pymupdf.LINK_GOTO, pymupdf.LINK_NAMED):
+                if target_page is None or target_page < 0:
+                    nameddest = l.get("nameddest")
+                    if nameddest:
+                        try:
+                            loc, _, _ = self.document.resolve_link(f"#{nameddest}")
+                            if loc >= 0:
+                                target_page = loc
+                        except Exception:
+                            pass
+
+                if target_page is not None and 0 <= target_page < len(self.document):
+                    label = self.page_labels[target_page] if target_page < len(self.page_labels) else ""
+                    if label:
+                        tooltip = f"スライド {label} (p.{target_page + 1}) へ移動"
+                    else:
+                        tooltip = f"スライド {target_page + 1} へ移動"
+                else:
+                    # 解決できなかった内部リンクはスキップ
+                    continue
+
+            elif kind == pymupdf.LINK_URI:
+                if not target_uri:
+                    continue
+                # URIが # から始まる内部リンクの場合（例: #nameddest）
+                if target_uri.startswith("#"):
+                    try:
+                        loc, _, _ = self.document.resolve_link(target_uri)
+                        if loc >= 0 and 0 <= loc < len(self.document):
+                            target_page = loc
+                            kind = pymupdf.LINK_GOTO
+                            label = self.page_labels[target_page] if target_page < len(self.page_labels) else ""
+                            tooltip = f"スライド {label} (p.{target_page + 1}) へ移動" if label else f"スライド {target_page + 1} へ移動"
+                        else:
+                            continue
+                    except Exception:
+                        continue
+                else:
+                    tooltip = f"リンクを開く: {target_uri}"
+
+            elif kind in (pymupdf.LINK_LAUNCH, pymupdf.LINK_GOTOR):
+                tooltip = f"開く: {target_file or target_uri or '外部ファイル'}"
+
+            else:
+                # サポート外または不明なリンク種別
+                continue
+
+            result.append(PdfLink(
+                kind=kind,
+                rect=(norm_x0, norm_y0, norm_x1, norm_y1),
+                page=target_page,
+                uri=target_uri,
+                file=target_file,
+                tooltip=tooltip
+            ))
+
+        self._page_links_cache[cache_key] = result
+        return result
 
     @classmethod
     def page_to_image(

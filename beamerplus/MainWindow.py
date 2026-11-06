@@ -111,13 +111,13 @@ class MainWindow(QMainWindow):
 
         # 3. 下部: スライド一覧（ThumbnailBar、表示/非表示切り替え可能）
         self.thumbnail_bar = ThumbnailBar()
-        self.thumbnail_bar.page_selected.connect(self.controller.set_page)
+        self.thumbnail_bar.page_selected.connect(self.controller.jump_to_page)
         self.main_layout.addWidget(self.thumbnail_bar)
 
         # 4. しおり（目次）引き出しオーバーレイ
         self.bookmark_drawer = BookmarkDrawer(central_widget)
         self.bookmark_drawer.set_trigger_widget(self.btn_sidebar_drawer)
-        self.bookmark_drawer.page_selected.connect(self.controller.set_page)
+        self.bookmark_drawer.page_selected.connect(self.controller.jump_to_page)
         self.bookmark_drawer.drawer_state_changed.connect(self._on_bookmark_drawer_state_changed)
 
         # コントローラからのシグナル受信
@@ -530,6 +530,11 @@ class MainWindow(QMainWindow):
 
         # メインスライド表示領域（ツールバー＋キャンバス）更新
         self.slide_view.set_pixmap(current_pixmap)
+        links = self.pdf_reader.get_page_links(index, auto_crop=True)
+        self.slide_view.set_links(links)
+        if self.viewer:
+            self.viewer.set_links(links)
+
         group = self.pdf_reader.get_group_for_page(index)
         sub_step = None
         if group and len(group.page_indices) > 1:
@@ -705,6 +710,10 @@ class MainWindow(QMainWindow):
             if not is_typing:
                 self.controller.prev_page()
                 return
+        elif (key == Qt.Key.Key_Left and event.modifiers() & Qt.KeyboardModifier.AltModifier) or key in (Qt.Key.Key_Back, Qt.Key.Key_Backspace):
+            if not is_typing and self.controller.can_jump_back:
+                self.controller.jump_back()
+                return
         elif key == Qt.Key.Key_B:
             if not is_typing:
                 self.controller.toggle_blank()
@@ -792,6 +801,21 @@ class MainWindow(QMainWindow):
                 "opacity": s.opacity,
                 "points": s.points
             })
+        links_data = []
+        if self.pdf_reader:
+            links = self.pdf_reader.get_page_links(self.controller.current_page, auto_crop=True)
+            links_data = [
+                {
+                    "rect": list(l.rect),
+                    "kind": l.kind,
+                    "page": l.page,
+                    "uri": l.uri,
+                    "file": l.file,
+                    "tooltip": l.tooltip
+                }
+                for l in links
+            ]
+
         return {
             "currentPage": self.controller.current_page,
             "totalPages": self.controller.total_pages,
@@ -808,6 +832,7 @@ class MainWindow(QMainWindow):
             "isSketchbook": self.controller.is_sketchbook,
             "isSketchVisible": self.controller.is_sketch_visible,
             "strokes": strokes_data,
+            "links": links_data,
             "sketchbookStrokes": sketchbook_data,
         }
 
@@ -943,11 +968,26 @@ class MainWindow(QMainWindow):
 
     def _sync_web_page_changed(self, index: int):
         if hasattr(self, "web_server") and self.web_server:
+            links_data = []
+            if self.pdf_reader:
+                links = self.pdf_reader.get_page_links(index, auto_crop=True)
+                links_data = [
+                    {
+                        "rect": list(l.rect),
+                        "kind": l.kind,
+                        "page": l.page,
+                        "uri": l.uri,
+                        "file": l.file,
+                        "tooltip": l.tooltip
+                    }
+                    for l in links
+                ]
             self.web_server.broadcast({
                 "type": "page_changed",
                 "page": index,
                 "totalPages": self.controller.total_pages,
                 "strokes": self._get_strokes_data_for_page(index),
+                "links": links_data,
             })
 
     def _sync_web_stroke_started(self, page_index: int, stroke):

@@ -784,6 +784,19 @@ HTML_CONTENT = """<!DOCTYPE html>
     let isSketchVisible = true;
     let sketchbookStrokes = [];
     let slideStrokes = [];
+    let currentLinks = [];
+
+    function findLinkAt(nx, ny) {
+      if (!currentLinks || isSketchbook) return null;
+      for (const l of currentLinks) {
+        if (!l.rect || l.rect.length < 4) continue;
+        const [x0, y0, x1, y1] = l.rect;
+        if (x0 <= nx && nx <= x1 && y0 <= ny && ny <= y1) {
+          return l;
+        }
+      }
+      return null;
+    }
 
     // スワイプ検出用状態
     let swipeTouchId = null;
@@ -1151,6 +1164,9 @@ HTML_CONTENT = """<!DOCTYPE html>
         slideStrokes = msg.strokes || [];
         if (msg.sketchbookStrokes !== undefined) {
           sketchbookStrokes = msg.sketchbookStrokes;
+        }
+        if (msg.links !== undefined) {
+          currentLinks = msg.links;
         }
         currentStrokePoints = [];
         clearAllCanvases();
@@ -1602,6 +1618,26 @@ HTML_CONTENT = """<!DOCTYPE html>
         return;
       }
       isTrackingSwipe = false;
+
+      // タップによるリンク操作判定（スワイプせず、描画も行われなかった場合）
+      if (!isDrawing && touch) {
+        const penOnly = penOnlyToggle.checked;
+        const canLink = (!currentTool) || (!pos.isStylus && penOnly);
+        if (canLink && pos.normX !== undefined && pos.normY !== undefined) {
+          const dx = touch.clientX - swipeStartX;
+          const dy = touch.clientY - swipeStartY;
+          if (Math.hypot(dx, dy) < 15) {
+            const link = findLinkAt(pos.normX, pos.normY);
+            if (link) {
+              if (link.page !== null && link.page !== undefined) {
+                sendWS({ type: 'set_page', page: link.page });
+              } else if (link.uri) {
+                window.open(link.uri, '_blank');
+              }
+            }
+          }
+        }
+      }
 
       if (currentTool === 'pointer') {
         // ポインタ操作は Pointer Events (ホバー＆タッチ対応) で一元処理

@@ -187,6 +187,7 @@ class PresentationController(QObject):
     """
     # ページ変更
     page_changed = Signal(int)
+    jump_history_changed = Signal(bool)                   # ジャンプ履歴の有無（戻れるかどうか）
 
     # ポインタ同期 (0.0 ~ 1.0)
     pointer_updated = Signal(float, float, bool, bool)  # norm_x, norm_y, visible, is_down
@@ -270,6 +271,13 @@ class PresentationController(QObject):
         # ページ正規化（Beamer \pause の同一フレーム集約用写像: 物理ページ -> canonicalページ）
         self.page_mapping: dict[int, int] = {}
 
+        # ハイパーリンク・目次ジャンプ履歴スタック (jump back用)
+        self.jump_history: list[int] = []
+
+    @property
+    def can_jump_back(self) -> bool:
+        return len(self.jump_history) > 0
+
     def set_page_mapping(self, mapping: dict[int, int] | None):
         self.page_mapping = mapping or {}
 
@@ -278,6 +286,29 @@ class PresentationController(QObject):
 
     def set_total_pages(self, total: int):
         self.total_pages = total
+        self.clear_jump_history()
+
+    def jump_to_page(self, index: int):
+        """ハイパーリンクや目次等から指定ページへジャンプ（直前のページを履歴スタックに記録）"""
+        if self.total_pages > 0 and 0 <= index < self.total_pages:
+            if self.current_page != index:
+                self.jump_history.append(self.current_page)
+                self.set_page(index)
+                self.jump_history_changed.emit(self.can_jump_back)
+
+    def jump_back(self) -> bool:
+        """ジャンプ元のスライドに戻る"""
+        if self.jump_history:
+            prev = self.jump_history.pop()
+            self.set_page(prev)
+            self.jump_history_changed.emit(self.can_jump_back)
+            return True
+        return False
+
+    def clear_jump_history(self):
+        if self.jump_history:
+            self.jump_history.clear()
+            self.jump_history_changed.emit(False)
 
     def set_page(self, index: int):
         if self.total_pages > 0 and 0 <= index < self.total_pages:
