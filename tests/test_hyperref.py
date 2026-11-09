@@ -93,6 +93,50 @@ class TestHyperrefFunctionality(unittest.TestCase):
                 if os.path.exists(p):
                     os.remove(p)
 
+    def test_link_jump_to_last_page_of_pause_group(self):
+        # \pause を含む複数枚構成フレーム（例: p.2 と p.3 が同一ラベル）へのリンクが
+        # グループの末尾サブページ（p.3）に解決されることを検証
+        base_pdf = tempfile.mktemp(suffix="_base.pdf")
+        out_pdf = tempfile.mktemp(suffix="_out.pdf")
+
+        try:
+            doc = pymupdf.Document()
+            doc.new_page(width=800, height=600)  # page 0: Frame 1
+            doc.new_page(width=800, height=600)  # page 1: Frame 2 (sub 1)
+            doc.new_page(width=800, height=600)  # page 2: Frame 2 (sub 2)
+            doc.save(base_pdf)
+            doc.close()
+
+            doc = pymupdf.open(base_pdf)
+            # ページラベルの設定 (page 1 と page 2 が同じラベル "2" -> \pause による複数枚スライド)
+            doc.set_page_labels([
+                {"startpage": 0, "prefix": "1", "style": None},
+                {"startpage": 1, "prefix": "2", "style": None},
+            ])
+
+            # page 0 から Frame 2 の先頭 (page 1) をターゲットとするリンクを配置
+            doc[0].insert_link({
+                "kind": pymupdf.LINK_GOTO,
+                "from": pymupdf.Rect(100, 100, 300, 200),
+                "page": 1
+            })
+            doc.save(out_pdf)
+            doc.close()
+
+            reader = PdfReader(out_pdf)
+            self.assertEqual(len(reader.page_groups), 2)
+            self.assertEqual(reader.page_groups[1].page_indices, [1, 2])
+
+            links = reader.get_page_links(0)
+            self.assertEqual(len(links), 1)
+            # リンクのターゲットがグループ先頭の 1 ではなく、末尾の 2 に解決されていること
+            self.assertEqual(links[0].page, 2)
+
+        finally:
+            for p in (base_pdf, out_pdf):
+                if os.path.exists(p):
+                    os.remove(p)
+
     def test_dual_screen_auto_crop_links(self):
         # 左右2画面 (show notes on second screen=right)
         base_pdf = tempfile.mktemp(suffix="_base.pdf")

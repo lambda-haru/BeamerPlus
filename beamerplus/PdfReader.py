@@ -125,6 +125,9 @@ class PdfReader:
         self.page_to_canonical: dict[int, int] = {
             p: g.page_indices[0] for g in self.page_groups for p in g.page_indices
         }
+        self.page_to_last: dict[int, int] = {
+            p: g.page_indices[-1] for g in self.page_groups for p in g.page_indices
+        }
         self._compute_group_keys()
 
         # ノート読み込み（新形式: version=2 ヘッダ付き / 旧形式: ヘッダなし 0-based インデックス）
@@ -254,6 +257,12 @@ class PdfReader:
         if idx is None:
             return None
         return self.page_to_canonical.get(idx, idx)
+
+    def get_last_page_of_group(self, index: str | int) -> int | None:
+        idx = self._resolve_index(index)
+        if idx is None:
+            return None
+        return self.page_to_last.get(idx, idx)
 
     def get_note(self, index: str | int) -> str | None:
         idx = self._resolve_index(index)
@@ -420,6 +429,8 @@ class PdfReader:
                             pass
 
                 if target_page is not None and 0 <= target_page < len(self.document):
+                    # \pause 等で複数枚のスライドで構成されるフレームの場合、最後のスライドに移動する
+                    target_page = self.page_to_last.get(target_page, target_page)
                     label = self.page_labels[target_page] if target_page < len(self.page_labels) else ""
                     if label:
                         tooltip = f"スライド {label} (p.{target_page + 1}) へ移動"
@@ -437,7 +448,7 @@ class PdfReader:
                     try:
                         loc, _, _ = self.document.resolve_link(target_uri)
                         if loc >= 0 and 0 <= loc < len(self.document):
-                            target_page = loc
+                            target_page = self.page_to_last.get(loc, loc)
                             kind = pymupdf.LINK_GOTO
                             label = self.page_labels[target_page] if target_page < len(self.page_labels) else ""
                             tooltip = f"スライド {label} (p.{target_page + 1}) へ移動" if label else f"スライド {target_page + 1} へ移動"

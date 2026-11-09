@@ -178,16 +178,19 @@ HTML_CONTENT = """<!DOCTYPE html>
       left: 0;
       width: 100vw;
       height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      overflow: hidden;
       background-color: #121212;
+      touch-action: none;
     }
     #slide-wrapper {
-      position: relative;
+      position: absolute;
+      top: 0;
+      left: 0;
       background-color: #000000;
       box-shadow: 0 4px 20px rgba(0,0,0,0.6);
-      display: inline-block;
+      display: block;
+      transform-origin: 0 0;
+      will-change: transform;
     }
     #slide-wrapper.sketchbook {
       background-color: #ffffff !important;
@@ -499,6 +502,50 @@ HTML_CONTENT = """<!DOCTYPE html>
     #toast.show {
       opacity: 1;
     }
+    /* フローティングズームバッジ */
+    #zoom-badge {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: rgba(30, 30, 35, 0.88);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 20px;
+      padding: 6px 14px;
+      color: #f0f0f0;
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+      z-index: 100;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      transform: translateY(10px);
+    }
+    #zoom-badge.visible {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+    #btn-zoom-reset {
+      background: rgba(56, 189, 248, 0.2);
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      color: #38bdf8;
+      border-radius: 12px;
+      padding: 3px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.15s ease;
+    }
+    #btn-zoom-reset:active {
+      transform: scale(0.92);
+      background: rgba(56, 189, 248, 0.4);
+    }
     /* パスコード認証オーバーレイ */
     #auth-overlay {
       position: fixed;
@@ -637,6 +684,12 @@ HTML_CONTENT = """<!DOCTYPE html>
   <div id="blank-overlay">⬛ 暗転中（タップで解除）</div>
   <div id="toast"></div>
 
+  <!-- フローティングズームバッジ（拡大時のみ表示） -->
+  <div id="zoom-badge">
+    <span id="zoom-text">100%</span>
+    <button id="btn-zoom-reset" type="button" title="等倍（100%）表示にリセット">リセット</button>
+  </div>
+
   <div id="stage">
     <div id="slide-wrapper">
       <img id="slide-img" alt="Slide" src="">
@@ -701,6 +754,9 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       <div class="separator"></div>
 
+      <!-- ズーム倍率表示・切替 -->
+      <button class="btn" id="btn-zoom-toggle" title="ズーム倍率（タップで等倍/2倍切替）">🔍 100%</button>
+
       <!-- 全画面表示トグル -->
       <button class="btn" id="btn-fullscreen" title="全画面表示切替">⛶</button>
     </div>
@@ -744,6 +800,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     const sizeVal = document.getElementById('size-val');
     const uiBar = document.getElementById('ui-bar');
     const uiToggle = document.getElementById('ui-toggle');
+    const zoomBadge = document.getElementById('zoom-badge');
+    const zoomText = document.getElementById('zoom-text');
+    const btnZoomReset = document.getElementById('btn-zoom-reset');
+    const btnZoomToggle = document.getElementById('btn-zoom-toggle');
 
     let currentTool = null; // 初期状態ではどのツールも未選択
     let toolColors = {
@@ -804,6 +864,133 @@ HTML_CONTENT = """<!DOCTYPE html>
     let swipeStartY = 0;
     let swipeStartTime = 0;
     let isTrackingSwipe = false;
+
+    // ズーム・パン状態管理
+    let zoomScale = 1.0;
+    let panX = 0;
+    let panY = 0;
+    let baseLeft = 0;
+    let baseTop = 0;
+    let targetW = 0;
+    let targetH = 0;
+
+    let isPinching = false;
+    let isPanning = false;
+    let pinchStartDist = 0;
+    let pinchStartScale = 1.0;
+    let pinchStartPanX = 0;
+    let pinchStartPanY = 0;
+    let pinchStartMidX = 0;
+    let pinchStartMidY = 0;
+
+    let panStartX = 0;
+    let panStartY = 0;
+    let panStartPanX = 0;
+    let panStartPanY = 0;
+
+    let activeDrawingTouchId = null;
+    let lastTapTime = 0;
+    let lastTapX = 0;
+    let lastTapY = 0;
+
+    function clampPan() {
+      const stageW = window.innerWidth;
+      const stageH = window.innerHeight;
+      const scaledW = targetW * zoomScale;
+      const scaledH = targetH * zoomScale;
+      const margin = 100;
+
+      if (scaledW <= stageW) {
+        panX = (stageW - scaledW) / 2;
+      } else {
+        const minX = stageW - scaledW - margin;
+        const maxX = margin;
+        panX = Math.max(minX, Math.min(maxX, panX));
+      }
+
+      if (scaledH <= stageH) {
+        panY = (stageH - scaledH) / 2;
+      } else {
+        const minY = stageH - scaledH - margin;
+        const maxY = margin;
+        panY = Math.max(minY, Math.min(maxY, panY));
+      }
+    }
+
+    function updateZoomUI() {
+      const pct = Math.round(zoomScale * 100);
+      if (zoomText) zoomText.innerText = `${pct}%`;
+      if (zoomBadge) {
+        zoomBadge.classList.toggle('visible', zoomScale > 1.05);
+      }
+      if (btnZoomToggle) {
+        btnZoomToggle.innerText = `🔍 ${pct}%`;
+        btnZoomToggle.classList.toggle('active', zoomScale > 1.05);
+      }
+      if (laserDot) {
+        laserDot.style.transform = `translate(-50%, -50%) scale(${1 / zoomScale})`;
+      }
+    }
+
+    function applyTransform(animate = false) {
+      if (animate) {
+        slideWrapper.style.transition = 'transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1)';
+      } else {
+        slideWrapper.style.transition = 'none';
+      }
+      slideWrapper.style.transform = `translate3d(${panX}px, ${panY}px, 0) scale(${zoomScale})`;
+      updateZoomUI();
+    }
+
+    slideWrapper.addEventListener('transitionend', () => {
+      slideWrapper.style.transition = 'none';
+    });
+
+    function resetZoom(animate = true) {
+      zoomScale = 1.0;
+      panX = baseLeft;
+      panY = baseTop;
+      applyTransform(animate);
+    }
+
+    function zoomTo(targetScale, centerX, centerY, animate = true) {
+      const stageW = window.innerWidth;
+      const stageH = window.innerHeight;
+      const cx = (centerX !== undefined) ? centerX : stageW / 2;
+      const cy = (centerY !== undefined) ? centerY : stageH / 2;
+
+      const slideX = (cx - panX) / zoomScale;
+      const slideY = (cy - panY) / zoomScale;
+
+      zoomScale = Math.max(1.0, Math.min(6.0, targetScale));
+      panX = cx - slideX * zoomScale;
+      panY = cy - slideY * zoomScale;
+      clampPan();
+      applyTransform(animate);
+    }
+
+    if (btnZoomReset) {
+      btnZoomReset.addEventListener('click', (e) => {
+        e.stopPropagation();
+        resetZoom(true);
+      });
+    }
+
+    if (btnZoomToggle) {
+      btnZoomToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (zoomScale > 1.05) {
+          resetZoom(true);
+        } else {
+          zoomTo(2.0, window.innerWidth / 2, window.innerHeight / 2, true);
+        }
+      });
+    }
+
+    // iOS Safari の標準ピンチズームジェスチャーを防止
+    document.addEventListener('gesturestart', (e) => e.preventDefault());
+    document.addEventListener('gesturechange', (e) => e.preventDefault());
+    document.addEventListener('gestureend', (e) => e.preventDefault());
 
     function getToolOpacity() {
       return currentTool === 'highlighter' ? (toolOpacities.highlighter || 0.28) : (toolOpacities.pen || 0.85);
@@ -1158,7 +1345,11 @@ HTML_CONTENT = """<!DOCTYPE html>
     // サーバーからの通知処理
     function handleServerMessage(msg) {
       if (msg.type === 'state_sync' || msg.type === 'page_changed') {
-        currentPage = msg.currentPage !== undefined ? msg.currentPage : msg.page;
+        const newPage = msg.currentPage !== undefined ? msg.currentPage : msg.page;
+        if (newPage !== currentPage) {
+          resetZoom(false);
+        }
+        currentPage = newPage;
         totalPages = msg.totalPages;
         pageIndicator.innerText = `${currentPage + 1} / ${totalPages}`;
         slideStrokes = msg.strokes || [];
@@ -1280,14 +1471,26 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
 
       const scale = Math.min(stageW / imgW, stageH / imgH);
-      const targetW = Math.max(100, Math.round(imgW * scale));
-      const targetH = Math.max(100, Math.round(imgH * scale));
+      targetW = Math.max(100, Math.round(imgW * scale));
+      targetH = Math.max(100, Math.round(imgH * scale));
 
       slideWrapper.style.width = targetW + 'px';
       slideWrapper.style.height = targetH + 'px';
 
-      // Canvas のピクセル解像度を Retina (devicePixelRatio) に合わせる
-      const dpr = window.devicePixelRatio || 2;
+      baseLeft = (stageW - targetW) / 2;
+      baseTop = (stageH - targetH) / 2;
+
+      if (zoomScale <= 1.05) {
+        zoomScale = 1.0;
+        panX = baseLeft;
+        panY = baseTop;
+      } else {
+        clampPan();
+      }
+      applyTransform(false);
+
+      // Canvas のピクセル解像度を Retina (devicePixelRatio) に合わせる（最低2x）
+      const dpr = Math.max(window.devicePixelRatio || 2, 2);
       [committedCanvas, activeCanvas, pointerCanvas].forEach(c => {
         c.width = targetW * dpr;
         c.height = targetH * dpr;
@@ -1409,8 +1612,37 @@ HTML_CONTENT = """<!DOCTYPE html>
     }, { capture: true, passive: true });
 
     // --- スタイラス / タッチ座標正規化 ---
-    function getNormalizedPos(e) {
-      const touch = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+    function getNormalizedPos(e, specificTouch = null) {
+      let touch = specificTouch;
+      if (!touch) {
+        if (activeDrawingTouchId !== null && e.touches) {
+          for (let i = 0; i < e.touches.length; i++) {
+            if (e.touches[i].identifier === activeDrawingTouchId) {
+              touch = e.touches[i];
+              break;
+            }
+          }
+        }
+        if (!touch && e.touches && e.touches.length > 0) {
+          // スタイラスのタッチがあれば優先的に選択
+          for (let i = 0; i < e.touches.length; i++) {
+            if (e.touches[i].touchType === 'stylus') {
+              touch = e.touches[i];
+              break;
+            }
+          }
+          if (!touch) touch = e.touches[0];
+        } else if (!touch && e.changedTouches && e.changedTouches.length > 0) {
+          for (let i = 0; i < e.changedTouches.length; i++) {
+            if (e.changedTouches[i].touchType === 'stylus') {
+              touch = e.changedTouches[i];
+              break;
+            }
+          }
+          if (!touch) touch = e.changedTouches[0];
+        }
+      }
+
       const rect = slideWrapper.getBoundingClientRect();
       const clientX = touch ? touch.clientX : 0;
       const clientY = touch ? touch.clientY : 0;
@@ -1460,14 +1692,63 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     // タッチ開始
     activeCanvas.addEventListener('touchstart', (e) => {
+      const touches = e.touches;
+      const fingerTouches = Array.from(touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+
+      // 2本指タッチ時は常にピンチズーム・パン開始
+      if (fingerTouches.length >= 2) {
+        if (isDrawing) {
+          isDrawing = false;
+          activeDrawingTouchId = null;
+          currentStrokePoints = [];
+          activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+          sendWS({ type: 'stroke_end' });
+        }
+        isTrackingSwipe = false;
+        isPanning = false;
+        isPinching = true;
+
+        const t0 = fingerTouches[0];
+        const t1 = fingerTouches[1];
+        pinchStartDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+        pinchStartMidX = (t0.clientX + t1.clientX) / 2;
+        pinchStartMidY = (t0.clientY + t1.clientY) / 2;
+        pinchStartScale = zoomScale;
+        pinchStartPanX = panX;
+        pinchStartPanY = panY;
+        slideWrapper.style.transition = 'none';
+        e.preventDefault();
+        return;
+      }
+
       const pos = getNormalizedPos(e);
       if (!pos.touch) return;
       const penOnly = penOnlyToggle.checked;
 
-      // スワイプ可能条件:
-      // A. ツールが未選択 (currentTool === null) の場合: 指・ペンを問わずスワイプ可能
-      // B. ツール選択中だが「Pencilのみ描画」ONかつ指でのタッチ (!pos.isStylus) の場合: 指スワイプ可能
-      const canSwipe = (!currentTool) || (!pos.isStylus && penOnly);
+      // 拡大中 (zoomScale > 1.05) の1本指操作
+      if (zoomScale > 1.05) {
+        if (!pos.isStylus && (penOnly || !currentTool)) {
+          // 「ペンのみ描画」ON時の指、またはツール未選択時の指: パン移動
+          if (isDrawing) {
+            isDrawing = false;
+            activeDrawingTouchId = null;
+            currentStrokePoints = [];
+            activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+            sendWS({ type: 'stroke_end' });
+          }
+          isPanning = true;
+          panStartX = pos.touch.clientX;
+          panStartY = pos.touch.clientY;
+          panStartPanX = panX;
+          panStartPanY = panY;
+          slideWrapper.style.transition = 'none';
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // 等倍時のスワイプ可能判定
+      const canSwipe = (zoomScale <= 1.05) && ((!currentTool) || (!pos.isStylus && penOnly));
       if (canSwipe) {
         startSwipe(pos.touch);
       }
@@ -1492,6 +1773,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
 
       if (currentTool === 'eraser') {
+        activeDrawingTouchId = pos.touch.identifier;
         sendWS({
           type: 'erase',
           normX: pos.normX,
@@ -1504,6 +1786,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       // ペン / 蛍光ペン描画（均一な透明度・太さで描画）
       isDrawing = true;
+      activeDrawingTouchId = pos.touch.identifier;
       if (isLineMode) {
         currentStrokePoints = [[pos.normX, pos.normY], [pos.normX, pos.normY]];
       } else {
@@ -1526,6 +1809,46 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     // タッチ移動
     activeCanvas.addEventListener('touchmove', (e) => {
+      const touches = e.touches;
+      const fingerTouches = Array.from(touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+
+      if (isPinching) {
+        e.preventDefault();
+        if (fingerTouches.length >= 2) {
+          const t0 = fingerTouches[0];
+          const t1 = fingerTouches[1];
+          const currDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+          const currMidX = (t0.clientX + t1.clientX) / 2;
+          const currMidY = (t0.clientY + t1.clientY) / 2;
+
+          const factor = currDist / (pinchStartDist || 1);
+          const newScale = Math.max(0.85, Math.min(6.5, pinchStartScale * factor));
+
+          const slideX = (pinchStartMidX - pinchStartPanX) / pinchStartScale;
+          const slideY = (pinchStartMidY - pinchStartPanY) / pinchStartScale;
+
+          panX = currMidX - slideX * newScale;
+          panY = currMidY - slideY * newScale;
+          zoomScale = newScale;
+
+          clampPan();
+          applyTransform(false);
+        }
+        return;
+      }
+
+      if (isPanning) {
+        e.preventDefault();
+        const touch = (touches && touches[0]) || (e.changedTouches && e.changedTouches[0]);
+        if (touch) {
+          panX = panStartPanX + (touch.clientX - panStartX);
+          panY = panStartPanY + (touch.clientY - panStartY);
+          clampPan();
+          applyTransform(false);
+        }
+        return;
+      }
+
       const pos = getNormalizedPos(e);
       if (!pos.touch) return;
       const penOnly = penOnlyToggle.checked;
@@ -1604,13 +1927,37 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     // タッチ終了
     const onTouchEnd = (e) => {
+      const fingerTouches = Array.from(e.touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+
+      if (isPinching) {
+        if (fingerTouches.length < 2) {
+          isPinching = false;
+          if (zoomScale < 1.05) {
+            resetZoom(true);
+          } else {
+            zoomScale = Math.min(6.0, zoomScale);
+            clampPan();
+            applyTransform(true);
+          }
+        }
+        return;
+      }
+
+      if (isPanning) {
+        isPanning = false;
+        clampPan();
+        applyTransform(true);
+        return;
+      }
+
       const pos = getNormalizedPos(e);
       const touch = pos.touch || (e.changedTouches && e.changedTouches[0]);
 
-      // スワイプ判定を実行
-      if (touch && checkSwipe(touch)) {
+      // スワイプ判定を実行（等倍時のみ）
+      if (zoomScale <= 1.05 && touch && checkSwipe(touch)) {
         if (isDrawing) {
           isDrawing = false;
+          activeDrawingTouchId = null;
           currentStrokePoints = [];
           activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
           sendWS({ type: 'stroke_end' });
@@ -1618,6 +1965,26 @@ HTML_CONTENT = """<!DOCTYPE html>
         return;
       }
       isTrackingSwipe = false;
+
+      // ダブルタップによるズーム切替判定（描画中でなく、指タッチの場合）
+      if (!isDrawing && touch && !pos.isStylus) {
+        const now = Date.now();
+        const tapDist = Math.hypot(touch.clientX - lastTapX, touch.clientY - lastTapY);
+        if (now - lastTapTime < 320 && tapDist < 35) {
+          lastTapTime = 0;
+          lastTapX = 0;
+          lastTapY = 0;
+          if (zoomScale > 1.05) {
+            resetZoom(true);
+          } else {
+            zoomTo(2.5, touch.clientX, touch.clientY, true);
+          }
+          return;
+        }
+        lastTapTime = now;
+        lastTapX = touch.clientX;
+        lastTapY = touch.clientY;
+      }
 
       // タップによるリンク操作判定（スワイプせず、描画も行われなかった場合）
       if (!isDrawing && touch) {
@@ -1630,6 +1997,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             const link = findLinkAt(pos.normX, pos.normY);
             if (link) {
               if (link.page !== null && link.page !== undefined) {
+                resetZoom(false);
                 sendWS({ type: 'set_page', page: link.page });
               } else if (link.uri) {
                 window.open(link.uri, '_blank');
@@ -1646,6 +2014,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       if (isDrawing) {
         isDrawing = false;
+        activeDrawingTouchId = null;
         // 終点を確実に反映（フリーハンド時のみ）
         if (!isLineMode && currentStrokePoints.length > 0 && pos.normX !== undefined) {
           const last = currentStrokePoints[currentStrokePoints.length - 1];
@@ -1684,39 +2053,122 @@ HTML_CONTENT = """<!DOCTYPE html>
     activeCanvas.addEventListener('touchend', onTouchEnd, { passive: false });
     activeCanvas.addEventListener('touchcancel', onTouchEnd, { passive: false });
 
-    // スライド外（stage）タッチ時のスワイプ対応
+    // スライド外（stage）タッチ時のピンチ・パン・スワイプ対応
     stage.addEventListener('touchstart', (e) => {
-      if (e.target !== stage) return;
-      const touch = e.touches[0];
-      if (touch) {
-        startSwipe(touch);
+      const fingerTouches = Array.from(e.touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+      if (fingerTouches.length >= 2) {
+        isPinching = true;
+        isPanning = false;
+        isTrackingSwipe = false;
+        const t0 = fingerTouches[0];
+        const t1 = fingerTouches[1];
+        pinchStartDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+        pinchStartMidX = (t0.clientX + t1.clientX) / 2;
+        pinchStartMidY = (t0.clientY + t1.clientY) / 2;
+        pinchStartScale = zoomScale;
+        pinchStartPanX = panX;
+        pinchStartPanY = panY;
+        slideWrapper.style.transition = 'none';
         e.preventDefault();
+        return;
+      }
+      if (e.target !== stage) return;
+      if (zoomScale > 1.05) {
+        const touch = e.touches[0];
+        if (touch) {
+          isPanning = true;
+          panStartX = touch.clientX;
+          panStartY = touch.clientY;
+          panStartPanX = panX;
+          panStartPanY = panY;
+          slideWrapper.style.transition = 'none';
+          e.preventDefault();
+        }
+      } else {
+        const touch = e.touches[0];
+        if (touch) {
+          startSwipe(touch);
+          e.preventDefault();
+        }
       }
     }, { passive: false });
 
     stage.addEventListener('touchmove', (e) => {
-      if (e.target !== stage) return;
+      const fingerTouches = Array.from(e.touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+      if (isPinching && fingerTouches.length >= 2) {
+        e.preventDefault();
+        const t0 = fingerTouches[0];
+        const t1 = fingerTouches[1];
+        const currDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+        const currMidX = (t0.clientX + t1.clientX) / 2;
+        const currMidY = (t0.clientY + t1.clientY) / 2;
+
+        const factor = currDist / (pinchStartDist || 1);
+        const newScale = Math.max(0.85, Math.min(6.5, pinchStartScale * factor));
+
+        const slideX = (pinchStartMidX - pinchStartPanX) / pinchStartScale;
+        const slideY = (pinchStartMidY - pinchStartPanY) / pinchStartScale;
+
+        panX = currMidX - slideX * newScale;
+        panY = currMidY - slideY * newScale;
+        zoomScale = newScale;
+
+        clampPan();
+        applyTransform(false);
+        return;
+      }
+      if (isPanning) {
+        e.preventDefault();
+        const touch = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+        if (touch) {
+          panX = panStartPanX + (touch.clientX - panStartX);
+          panY = panStartPanY + (touch.clientY - panStartY);
+          clampPan();
+          applyTransform(false);
+        }
+        return;
+      }
       if (isTrackingSwipe) {
         e.preventDefault();
       }
     }, { passive: false });
 
     stage.addEventListener('touchend', (e) => {
+      const fingerTouches = Array.from(e.touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+      if (isPinching) {
+        if (fingerTouches.length < 2) {
+          isPinching = false;
+          if (zoomScale < 1.05) {
+            resetZoom(true);
+          } else {
+            zoomScale = Math.min(6.0, zoomScale);
+            clampPan();
+            applyTransform(true);
+          }
+        }
+        return;
+      }
+      if (isPanning) {
+        isPanning = false;
+        clampPan();
+        applyTransform(true);
+        return;
+      }
       if (e.target !== stage) return;
       const touch = e.changedTouches[0];
-      if (touch) {
+      if (touch && zoomScale <= 1.05) {
         checkSwipe(touch);
       }
       isTrackingSwipe = false;
     }, { passive: false });
 
     stage.addEventListener('touchcancel', (e) => {
-      if (e.target !== stage) return;
-      const touch = e.changedTouches[0];
-      if (touch) {
-        checkSwipe(touch);
-      }
+      isPinching = false;
+      isPanning = false;
       isTrackingSwipe = false;
+      if (zoomScale < 1.05) {
+        resetZoom(true);
+      }
     }, { passive: false });
 
     // UIバー上でのスクロール・タップがスワイプや描画と競合しないよう伝播を止める
@@ -2050,8 +2502,14 @@ HTML_CONTENT = """<!DOCTYPE html>
     });
 
     // ページ操作ボタン
-    btnPrev.addEventListener('click', () => sendWS({ type: 'prev_page' }));
-    btnNext.addEventListener('click', () => sendWS({ type: 'next_page' }));
+    btnPrev.addEventListener('click', () => {
+      resetZoom(false);
+      sendWS({ type: 'prev_page' });
+    });
+    btnNext.addEventListener('click', () => {
+      resetZoom(false);
+      sendWS({ type: 'next_page' });
+    });
     btnClear.addEventListener('click', () => {
       clearAllCanvases();
       sendWS({ type: 'clear' });
