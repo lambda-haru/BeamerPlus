@@ -736,6 +736,7 @@ class MainWindow(QMainWindow):
         self.web_bridge.stroke_started.connect(self._on_web_stroke_started)
         self.web_bridge.stroke_moved.connect(self._on_web_stroke_moved)
         self.web_bridge.stroke_ended.connect(self._on_web_stroke_ended)
+        self.web_bridge.stroke_canceled.connect(self._on_web_stroke_canceled)
         self.web_bridge.pointer_updated.connect(self._on_web_pointer_updated)
         self.web_bridge.erase_requested.connect(self._on_web_erase_requested)
         self.web_bridge.line_update_command.connect(self._on_web_line_update_command)
@@ -871,6 +872,13 @@ class MainWindow(QMainWindow):
     def _on_web_stroke_ended(self):
         try:
             self.controller.end_stroke()
+        finally:
+            self._is_handling_web_stroke = False
+
+    def _on_web_stroke_canceled(self):
+        self._is_handling_web_stroke = True
+        try:
+            self.controller.cancel_stroke()
         finally:
             self._is_handling_web_stroke = False
 

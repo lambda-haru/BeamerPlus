@@ -875,6 +875,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     let targetH = 0;
 
     let isPinching = false;
+    let pinchGestureActive = false;
     let isPanning = false;
     let pinchStartDist = 0;
     let pinchStartScale = 1.0;
@@ -889,6 +890,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     let panStartPanY = 0;
 
     let activeDrawingTouchId = null;
+    let pendingFingerAction = null;
+    const activeTouchPointerIds = new Set();
+    let hoverTimeoutId = null;
     let lastTapTime = 0;
     let lastTapX = 0;
     let lastTapY = 0;
@@ -1359,6 +1363,9 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (msg.links !== undefined) {
           currentLinks = msg.links;
         }
+        clearPendingFingerAction();
+        isDrawing = false;
+        activeDrawingTouchId = null;
         currentStrokePoints = [];
         clearAllCanvases();
         renderAllStrokes(isSketchbook ? sketchbookStrokes : slideStrokes);
@@ -1393,6 +1400,10 @@ HTML_CONTENT = """<!DOCTYPE html>
       } else if (msg.type === 'sketch_saved') {
         showToast(`✓ PC側保存: ${msg.filename}`);
       } else if (msg.type === 'strokes_cleared') {
+        clearPendingFingerAction();
+        isDrawing = false;
+        activeDrawingTouchId = null;
+        currentStrokePoints = [];
         clearAllCanvases();
         if (isSketchbook) {
           sketchbookStrokes = [];
@@ -1589,6 +1600,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     let lastPointerType = 'touch';
     window.addEventListener('pointerdown', (e) => {
       lastPointerType = e.pointerType;
+      if (e.pointerType === 'touch') {
+        activeTouchPointerIds.add(e.pointerId);
+      }
     }, { capture: true, passive: true });
 
     window.addEventListener('pointermove', (e) => {
@@ -1598,6 +1612,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     }, { capture: true, passive: true });
 
     window.addEventListener('pointerup', (e) => {
+      if (e.pointerType === 'touch') {
+        activeTouchPointerIds.delete(e.pointerId);
+      }
       if (e.pointerType === 'pen') {
         setTimeout(() => {
           if (lastPointerType === 'pen') lastPointerType = 'touch';
@@ -1608,6 +1625,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     }, { capture: true, passive: true });
 
     window.addEventListener('pointercancel', (e) => {
+      if (e.pointerType === 'touch') {
+        activeTouchPointerIds.delete(e.pointerId);
+      }
       lastPointerType = 'touch';
     }, { capture: true, passive: true });
 
@@ -1690,36 +1710,157 @@ HTML_CONTENT = """<!DOCTYPE html>
       return false;
     }
 
+    const PENDING_FINGER_DELAY_MS = 75;
+    const PENDING_FINGER_MOVE_PX = 4;
+
+    function getFingerTouches(touchList) {
+      return Array.from(touchList || []).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+    }
+
+    function clearPendingFingerAction() {
+      if (pendingFingerAction) {
+        if (pendingFingerAction.timerId) {
+          clearTimeout(pendingFingerAction.timerId);
+        }
+        pendingFingerAction = null;
+      }
+    }
+
+    function beginToolAction(action) {
+      if (action.tool === 'eraser') {
+        activeDrawingTouchId = action.touchId;
+        sendWS({
+          type: 'erase',
+          normX: action.startNormX,
+          normY: action.startNormY,
+          mode: eraserMode,
+          size: action.size
+        });
+        return;
+      }
+
+      isDrawing = true;
+      activeDrawingTouchId = action.touchId;
+      if (action.isLine) {
+        currentStrokePoints = [[action.startNormX, action.startNormY], [action.startNormX, action.startNormY]];
+      } else {
+        currentStrokePoints = [[action.startNormX, action.startNormY]];
+      }
+      drawActiveStroke();
+
+      sendWS({
+        type: 'stroke_start',
+        tool: action.tool,
+        color: action.color,
+        size: action.size,
+        widthRatio: action.widthRatio,
+        normX: action.startNormX,
+        normY: action.startNormY,
+        pressure: 1.0,
+        isLine: action.isLine
+      });
+    }
+
+    function flushPendingFingerAction() {
+      if (!pendingFingerAction) return;
+      const action = pendingFingerAction;
+      clearPendingFingerAction();
+      beginToolAction(action);
+    }
+
+    function cancelActiveDrawingAndPending() {
+      clearPendingFingerAction();
+      if (isDrawing) {
+        isDrawing = false;
+        activeDrawingTouchId = null;
+        currentStrokePoints = [];
+        activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+        sendWS({ type: 'stroke_cancel' });
+      } else {
+        activeDrawingTouchId = null;
+      }
+    }
+
+    function hidePointerForPinch() {
+      if (currentTool === 'pointer') {
+        if (hoverTimeoutId) {
+          clearTimeout(hoverTimeoutId);
+          hoverTimeoutId = null;
+        }
+        updateLaserDot(0, 0, false, false);
+        sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
+      }
+    }
+
+    function startPinch(fingerTouches) {
+      cancelActiveDrawingAndPending();
+      hidePointerForPinch();
+      isTrackingSwipe = false;
+      isPanning = false;
+      isPinching = true;
+      pinchGestureActive = true;
+
+      const t0 = fingerTouches[0];
+      const t1 = fingerTouches[1];
+      pinchStartDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+      pinchStartMidX = (t0.clientX + t1.clientX) / 2;
+      pinchStartMidY = (t0.clientY + t1.clientY) / 2;
+      pinchStartScale = zoomScale;
+      pinchStartPanX = panX;
+      pinchStartPanY = panY;
+      slideWrapper.style.transition = 'none';
+    }
+
+    function updatePinch(fingerTouches) {
+      if (fingerTouches.length < 2) return;
+      const t0 = fingerTouches[0];
+      const t1 = fingerTouches[1];
+      const currDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
+      const currMidX = (t0.clientX + t1.clientX) / 2;
+      const currMidY = (t0.clientY + t1.clientY) / 2;
+
+      const factor = currDist / (pinchStartDist || 1);
+      const newScale = Math.max(0.85, Math.min(6.5, pinchStartScale * factor));
+
+      const slideX = (pinchStartMidX - pinchStartPanX) / pinchStartScale;
+      const slideY = (pinchStartMidY - pinchStartPanY) / pinchStartScale;
+
+      panX = currMidX - slideX * newScale;
+      panY = currMidY - slideY * newScale;
+      zoomScale = newScale;
+
+      clampPan();
+      applyTransform(false);
+    }
+
+    function finishPinch(fingerTouches) {
+      if (isPinching && fingerTouches.length < 2) {
+        isPinching = false;
+        if (zoomScale < 1.05) {
+          resetZoom(true);
+        } else {
+          zoomScale = Math.min(6.0, zoomScale);
+          clampPan();
+          applyTransform(true);
+        }
+      }
+      if (fingerTouches.length === 0) {
+        pinchGestureActive = false;
+      }
+    }
+
     // タッチ開始
     activeCanvas.addEventListener('touchstart', (e) => {
       const touches = e.touches;
-      const fingerTouches = Array.from(touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+      const fingerTouches = getFingerTouches(touches);
 
       // 2本指タッチ時は常にピンチズーム・パン開始
       if (fingerTouches.length >= 2) {
-        if (isDrawing) {
-          isDrawing = false;
-          activeDrawingTouchId = null;
-          currentStrokePoints = [];
-          activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
-          sendWS({ type: 'stroke_end' });
-        }
-        isTrackingSwipe = false;
-        isPanning = false;
-        isPinching = true;
-
-        const t0 = fingerTouches[0];
-        const t1 = fingerTouches[1];
-        pinchStartDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
-        pinchStartMidX = (t0.clientX + t1.clientX) / 2;
-        pinchStartMidY = (t0.clientY + t1.clientY) / 2;
-        pinchStartScale = zoomScale;
-        pinchStartPanX = panX;
-        pinchStartPanY = panY;
-        slideWrapper.style.transition = 'none';
+        startPinch(fingerTouches);
         e.preventDefault();
         return;
       }
+      pinchGestureActive = false;
 
       const pos = getNormalizedPos(e);
       if (!pos.touch) return;
@@ -1729,13 +1870,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (zoomScale > 1.05) {
         if (!pos.isStylus && (penOnly || !currentTool)) {
           // 「ペンのみ描画」ON時の指、またはツール未選択時の指: パン移動
-          if (isDrawing) {
-            isDrawing = false;
-            activeDrawingTouchId = null;
-            currentStrokePoints = [];
-            activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
-            sendWS({ type: 'stroke_end' });
-          }
+          cancelActiveDrawingAndPending();
           isPanning = true;
           panStartX = pos.touch.clientX;
           panStartY = pos.touch.clientY;
@@ -1772,68 +1907,46 @@ HTML_CONTENT = """<!DOCTYPE html>
         return;
       }
 
-      if (currentTool === 'eraser') {
-        activeDrawingTouchId = pos.touch.identifier;
-        sendWS({
-          type: 'erase',
-          normX: pos.normX,
-          normY: pos.normY,
-          mode: eraserMode,
-          size: toolSizes.eraser || 25
-        });
+      const tool = currentTool;
+      const action = {
+        touchId: pos.touch.identifier,
+        tool: tool,
+        color: currentColor,
+        size: toolSizes[tool] || (tool === 'eraser' ? 25 : 5),
+        widthRatio: getCurrentWidthRatio(),
+        isLine: isLineMode,
+        startClientX: pos.touch.clientX,
+        startClientY: pos.touch.clientY,
+        startNormX: pos.normX,
+        startNormY: pos.normY,
+        timerId: null
+      };
+
+      // 指描画時は2本指ピンチの1本目である可能性を考慮し、短時間/微小移動だけ開始を保留する
+      if (!pos.isStylus) {
+        clearPendingFingerAction();
+        action.timerId = setTimeout(() => {
+          flushPendingFingerAction();
+        }, PENDING_FINGER_DELAY_MS);
+        pendingFingerAction = action;
         return;
       }
 
-      // ペン / 蛍光ペン描画（均一な透明度・太さで描画）
-      isDrawing = true;
-      activeDrawingTouchId = pos.touch.identifier;
-      if (isLineMode) {
-        currentStrokePoints = [[pos.normX, pos.normY], [pos.normX, pos.normY]];
-      } else {
-        currentStrokePoints = [[pos.normX, pos.normY]];
-      }
-      drawActiveStroke();
-
-      sendWS({
-        type: 'stroke_start',
-        tool: currentTool,
-        color: currentColor,
-        size: toolSizes[currentTool] || 5,
-        widthRatio: getCurrentWidthRatio(),
-        normX: pos.normX,
-        normY: pos.normY,
-        pressure: 1.0,
-        isLine: isLineMode
-      });
+      beginToolAction(action);
     }, { passive: false });
 
     // タッチ移動
     activeCanvas.addEventListener('touchmove', (e) => {
       const touches = e.touches;
-      const fingerTouches = Array.from(touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+      const fingerTouches = getFingerTouches(touches);
 
       if (isPinching) {
         e.preventDefault();
-        if (fingerTouches.length >= 2) {
-          const t0 = fingerTouches[0];
-          const t1 = fingerTouches[1];
-          const currDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
-          const currMidX = (t0.clientX + t1.clientX) / 2;
-          const currMidY = (t0.clientY + t1.clientY) / 2;
-
-          const factor = currDist / (pinchStartDist || 1);
-          const newScale = Math.max(0.85, Math.min(6.5, pinchStartScale * factor));
-
-          const slideX = (pinchStartMidX - pinchStartPanX) / pinchStartScale;
-          const slideY = (pinchStartMidY - pinchStartPanY) / pinchStartScale;
-
-          panX = currMidX - slideX * newScale;
-          panY = currMidY - slideY * newScale;
-          zoomScale = newScale;
-
-          clampPan();
-          applyTransform(false);
-        }
+        updatePinch(fingerTouches);
+        return;
+      }
+      if (pinchGestureActive) {
+        e.preventDefault();
         return;
       }
 
@@ -1847,6 +1960,28 @@ HTML_CONTENT = """<!DOCTYPE html>
           applyTransform(false);
         }
         return;
+      }
+
+      if (pendingFingerAction) {
+        let pendingTouch = null;
+        for (let i = 0; i < touches.length; i++) {
+          if (touches[i].identifier === pendingFingerAction.touchId) {
+            pendingTouch = touches[i];
+            break;
+          }
+        }
+        if (pendingTouch) {
+          const dist = Math.hypot(
+            pendingTouch.clientX - pendingFingerAction.startClientX,
+            pendingTouch.clientY - pendingFingerAction.startClientY
+          );
+          if (dist >= PENDING_FINGER_MOVE_PX) {
+            flushPendingFingerAction();
+          } else {
+            e.preventDefault();
+            return;
+          }
+        }
       }
 
       const pos = getNormalizedPos(e);
@@ -1927,19 +2062,11 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     // タッチ終了
     const onTouchEnd = (e) => {
-      const fingerTouches = Array.from(e.touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+      const fingerTouches = getFingerTouches(e.touches);
 
-      if (isPinching) {
-        if (fingerTouches.length < 2) {
-          isPinching = false;
-          if (zoomScale < 1.05) {
-            resetZoom(true);
-          } else {
-            zoomScale = Math.min(6.0, zoomScale);
-            clampPan();
-            applyTransform(true);
-          }
-        }
+      if (isPinching || pinchGestureActive) {
+        finishPinch(fingerTouches);
+        isTrackingSwipe = false;
         return;
       }
 
@@ -1948,6 +2075,19 @@ HTML_CONTENT = """<!DOCTYPE html>
         clampPan();
         applyTransform(true);
         return;
+      }
+
+      if (pendingFingerAction) {
+        const endedPending = Array.from(e.changedTouches || []).some(
+          t => t.identifier === pendingFingerAction.touchId
+        );
+        if (endedPending) {
+          if (e.type === 'touchcancel') {
+            clearPendingFingerAction();
+            return;
+          }
+          flushPendingFingerAction();
+        }
       }
 
       const pos = getNormalizedPos(e);
@@ -2012,6 +2152,10 @@ HTML_CONTENT = """<!DOCTYPE html>
         return;
       }
 
+      if (currentTool === 'eraser' && activeDrawingTouchId !== null && (!e.touches || e.touches.length === 0)) {
+        activeDrawingTouchId = null;
+      }
+
       if (isDrawing) {
         isDrawing = false;
         activeDrawingTouchId = null;
@@ -2055,24 +2199,14 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     // スライド外（stage）タッチ時のピンチ・パン・スワイプ対応
     stage.addEventListener('touchstart', (e) => {
-      const fingerTouches = Array.from(e.touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
+      const fingerTouches = getFingerTouches(e.touches);
       if (fingerTouches.length >= 2) {
-        isPinching = true;
-        isPanning = false;
-        isTrackingSwipe = false;
-        const t0 = fingerTouches[0];
-        const t1 = fingerTouches[1];
-        pinchStartDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
-        pinchStartMidX = (t0.clientX + t1.clientX) / 2;
-        pinchStartMidY = (t0.clientY + t1.clientY) / 2;
-        pinchStartScale = zoomScale;
-        pinchStartPanX = panX;
-        pinchStartPanY = panY;
-        slideWrapper.style.transition = 'none';
+        startPinch(fingerTouches);
         e.preventDefault();
         return;
       }
       if (e.target !== stage) return;
+      pinchGestureActive = false;
       if (zoomScale > 1.05) {
         const touch = e.touches[0];
         if (touch) {
@@ -2094,27 +2228,14 @@ HTML_CONTENT = """<!DOCTYPE html>
     }, { passive: false });
 
     stage.addEventListener('touchmove', (e) => {
-      const fingerTouches = Array.from(e.touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
-      if (isPinching && fingerTouches.length >= 2) {
+      const fingerTouches = getFingerTouches(e.touches);
+      if (isPinching) {
         e.preventDefault();
-        const t0 = fingerTouches[0];
-        const t1 = fingerTouches[1];
-        const currDist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
-        const currMidX = (t0.clientX + t1.clientX) / 2;
-        const currMidY = (t0.clientY + t1.clientY) / 2;
-
-        const factor = currDist / (pinchStartDist || 1);
-        const newScale = Math.max(0.85, Math.min(6.5, pinchStartScale * factor));
-
-        const slideX = (pinchStartMidX - pinchStartPanX) / pinchStartScale;
-        const slideY = (pinchStartMidY - pinchStartPanY) / pinchStartScale;
-
-        panX = currMidX - slideX * newScale;
-        panY = currMidY - slideY * newScale;
-        zoomScale = newScale;
-
-        clampPan();
-        applyTransform(false);
+        updatePinch(fingerTouches);
+        return;
+      }
+      if (pinchGestureActive) {
+        e.preventDefault();
         return;
       }
       if (isPanning) {
@@ -2134,18 +2255,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     }, { passive: false });
 
     stage.addEventListener('touchend', (e) => {
-      const fingerTouches = Array.from(e.touches).filter(t => t.touchType !== 'stylus' && lastPointerType !== 'pen');
-      if (isPinching) {
-        if (fingerTouches.length < 2) {
-          isPinching = false;
-          if (zoomScale < 1.05) {
-            resetZoom(true);
-          } else {
-            zoomScale = Math.min(6.0, zoomScale);
-            clampPan();
-            applyTransform(true);
-          }
-        }
+      const fingerTouches = getFingerTouches(e.touches);
+      if (isPinching || pinchGestureActive) {
+        finishPinch(fingerTouches);
+        isTrackingSwipe = false;
         return;
       }
       if (isPanning) {
@@ -2163,7 +2276,11 @@ HTML_CONTENT = """<!DOCTYPE html>
     }, { passive: false });
 
     stage.addEventListener('touchcancel', (e) => {
+      const fingerTouches = getFingerTouches(e.touches);
       isPinching = false;
+      if (fingerTouches.length === 0) {
+        pinchGestureActive = false;
+      }
       isPanning = false;
       isTrackingSwipe = false;
       if (zoomScale < 1.05) {
@@ -2316,8 +2433,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     // --- Apple Pencil ホバー & タッチ対応レーザーポインタ (Pointer Events) ---
-    let hoverTimeoutId = null;
-
     function getPointerNormPos(e) {
       const rect = slideWrapper.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -2340,6 +2455,10 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (currentTool !== 'pointer') return;
       const penOnly = penOnlyToggle.checked;
       if (e.pointerType === 'touch' && penOnly) return;
+      if (e.pointerType === 'touch' && (isPinching || pinchGestureActive || activeTouchPointerIds.size >= 2)) {
+        hidePointerForPinch();
+        return;
+      }
 
       if (hoverTimeoutId) {
         clearTimeout(hoverTimeoutId);
@@ -2362,6 +2481,10 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (currentTool !== 'pointer') return;
       const penOnly = penOnlyToggle.checked;
       if (e.pointerType === 'touch' && penOnly) return;
+      if (e.pointerType === 'touch' && (isPinching || pinchGestureActive || activeTouchPointerIds.size >= 2)) {
+        hidePointerForPinch();
+        return;
+      }
 
       if (hoverTimeoutId) {
         clearTimeout(hoverTimeoutId);
@@ -2454,6 +2577,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     // --- ツール選択・UI操作 ---
     function selectTool(toolName) {
+      cancelActiveDrawingAndPending();
       if (currentTool === toolName) {
         // 使用しているツールのボタンを押したら選択解除（未選択状態にする）
         if (currentTool === 'pointer') {
@@ -2540,6 +2664,7 @@ class WebBridge(QObject):
     stroke_started = Signal(dict)
     stroke_moved = Signal(dict)
     stroke_ended = Signal()
+    stroke_canceled = Signal()
     pointer_updated = Signal(float, float, bool, bool)
     erase_requested = Signal(dict)
     eraser_mode_command = Signal(str)  # "partial" または "stroke"
@@ -2771,6 +2896,8 @@ class WebServer:
             self.bridge.stroke_moved.emit(data)
         elif msg_type == "stroke_end":
             self.bridge.stroke_ended.emit()
+        elif msg_type == "stroke_cancel":
+            self.bridge.stroke_canceled.emit()
         elif msg_type == "pointer_move":
             self.bridge.pointer_updated.emit(
                 float(data.get("normX", 0.0)),

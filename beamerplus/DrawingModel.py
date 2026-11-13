@@ -489,6 +489,37 @@ class PresentationController(QObject):
             page = -1 if self.is_sketchbook else self.current_page
             self.stroke_finished.emit(page)
 
+    def cancel_stroke(self):
+        """描画中のストロークをキャンセルし、履歴やページデータから取り除く"""
+        stroke = self.current_stroke
+        if stroke is None:
+            return
+        self.current_stroke = None
+
+        if self.is_sketchbook:
+            strokes = self.sketchbook_strokes
+            history = self.sketchbook_history
+            page_arg = -1
+        else:
+            target_page = self.get_canonical_page(self.current_page)
+            strokes = self.page_strokes.get(target_page)
+            history = self.page_history.get(target_page)
+            page_arg = self.current_page
+
+        if strokes is not None:
+            for i, s in enumerate(strokes):
+                if s is stroke:
+                    strokes.pop(i)
+                    break
+        if history is not None:
+            history[:] = [
+                entry for entry in history
+                if not (entry[0] == "stroke" and entry[1] is stroke)
+            ]
+
+        self.stroke_finished.emit(page_arg)
+        self.strokes_updated.emit(page_arg)
+
     def add_text(self, norm_x: float, norm_y: float, text: str) -> TextItem | None:
         """指定した相対座標にテキストアイテムを追加"""
         text = text.strip()
