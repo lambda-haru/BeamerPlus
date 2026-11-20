@@ -1,6 +1,5 @@
 import os
 import math
-import time
 from PySide6.QtCore import Qt, QPointF, QRectF, QEvent, QSize, QTimer, QUrl
 from PySide6.QtWidgets import QWidget, QLineEdit
 from PySide6.QtGui import (
@@ -9,7 +8,10 @@ from PySide6.QtGui import (
     QDesktopServices
 )
 
-from beamerplus.DrawingModel import PresentationController, Stroke, TextItem, create_smooth_path
+from beamerplus.DrawingModel import (
+    PresentationController, Stroke, TextItem, create_smooth_path,
+    LaserTrailManager, draw_laser_trails,
+)
 from beamerplus.PdfReader import PdfLink
 
 
@@ -24,6 +26,7 @@ class SlideCanvas(QWidget):
         self.setStyleSheet("background-color: #121212;")
 
         # コントローラシグナル接続
+        self.controller.page_changed.connect(self._on_page_changed)
         self.controller.pointer_updated.connect(self._on_pointer_updated)
         self.controller.stroke_started.connect(self._on_stroke_started)
         self.controller.stroke_added_point.connect(self._on_stroke_added_point)
@@ -45,9 +48,7 @@ class SlideCanvas(QWidget):
 
         self.pointer_pos: tuple[float, float] | None = None
         self.is_pointer_visible: bool = False
-        self.is_pointer_down: bool = False
-        self.current_trail: list[tuple[float, float, float]] = []  # 現在ドラッグ中の軌跡 (norm_x, norm_y, timestamp)
-        self.fading_trails: list[tuple[list[tuple[float, float, float]], float]] = []  # 離されたフェードアウト中ストローク [(points, release_time), ...]
+        self.trail_manager = LaserTrailManager()
         self.trail_timer = QTimer(self)
         self.trail_timer.setInterval(20)
         self.trail_timer.timeout.connect(self._on_trail_timer_tick)
@@ -207,54 +208,29 @@ class SlideCanvas(QWidget):
 
         return end_norm
 
+    def _clear_pointer_trails(self):
+        self.trail_manager.clear()
+        self.trail_timer.stop()
+
+    def _on_page_changed(self, page_index: int):
+        self._clear_pointer_trails()
+        self.update()
+
     def _on_pointer_updated(self, nx: float, ny: float, visible: bool, is_down: bool = False):
         self.is_pointer_visible = visible
-        prev_down = self.is_pointer_down
-        self.is_pointer_down = is_down
-        now = time.time()
+        self.pointer_pos = (nx, ny) if visible else None
 
-        if visible:
-            self.pointer_pos = (nx, ny)
-            if is_down:
-                if not prev_down:
-                    # 新しいストロークの開始（前のストロークとは完全に分離）
-                    if len(self.current_trail) >= 2:
-                        self.fading_trails.append((list(self.current_trail), now))
-                    self.current_trail = [(nx, ny, now)]
-                else:
-                    self.current_trail.append((nx, ny, now))
-                if not self.trail_timer.isActive():
-                    self.trail_timer.start()
-            elif prev_down and not is_down:
-                # 指・マウスを離した瞬間: 現在のストロークをフェードアウト一覧へ移行
-                if len(self.current_trail) >= 2:
-                    self.fading_trails.append((list(self.current_trail), now))
-                self.current_trail = []
-        else:
-            self.pointer_pos = None
-            if prev_down:
-                if len(self.current_trail) >= 2:
-                    self.fading_trails.append((list(self.current_trail), now))
-                self.current_trail = []
+        active = self.trail_manager.update(nx, ny, visible, is_down)
+        if active:
+            if not self.trail_timer.isActive():
+                self.trail_timer.start()
+        elif self.trail_timer.isActive():
+            self.trail_timer.stop()
 
         self.update()
 
     def _on_trail_timer_tick(self):
-        now = time.time()
-        lifetime = 0.45      # ドラッグ中の軌跡の寿命（0.45秒）
-        fade_duration = 0.25 # 離した後のフェードアウト時間（0.25秒）
-
-        # ドラッグ中ストロークの古い点を削除
-        if self.current_trail:
-            self.current_trail = [p for p in self.current_trail if now - p[2] < lifetime]
-
-        # 離されてから 0.25秒 経過したフェードアウト中ストロークを削除
-        self.fading_trails = [
-            (pts, rel_t) for pts, rel_t in self.fading_trails
-            if now - rel_t < fade_duration
-        ]
-
-        if not self.current_trail and not self.fading_trails:
+        if not self.trail_manager.tick():
             self.trail_timer.stop()
         self.update()
 
@@ -289,12 +265,12 @@ class SlideCanvas(QWidget):
         if tool_name != "text" and self.text_input.isVisible():
             self._commit_text()
         if tool_name != "pointer":
-            self.current_trail.clear()
-            self.fading_trails.clear()
-            self.trail_timer.stop()
+            self._clear_pointer_trails()
         if tool_name == "text":
             self.setCursor(Qt.CursorShape.IBeamCursor)
-        elif tool_name == "hand":
+        elif tool_name == "eraser":
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif tool_name in ("hand", "pointer"):
             self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
 
@@ -346,17 +322,26 @@ class SlideCanvas(QWidget):
 
     def _on_blank_state_changed(self, enabled: bool):
         if enabled:
-            self.current_trail.clear()
-            self.fading_trails.clear()
-            self.trail_timer.stop()
+            self._clear_pointer_trails()
         self.update()
 
     def _on_sketchbook_state_changed(self, enabled: bool):
+        self._clear_pointer_trails()
         self._update_scaled_pixmap()
         self.update()
 
     def _on_sketch_visibility_changed(self, visible: bool):
         self.update()
+
+    def _erase_at_norm(self, norm: tuple[float, float]):
+        rect = self._get_slide_rect()
+        aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
+        if self.controller.eraser_mode == "stroke":
+            self.controller.erase_at_point(norm[0], norm[1], aspect_ratio=aspect_ratio)
+        else:
+            eraser_size = self.controller.get_tool_size("eraser")
+            threshold = max(0.008, eraser_size * 0.001)
+            self.controller.erase_at_point(norm[0], norm[1], threshold=threshold, aspect_ratio=aspect_ratio)
 
     # ==========================================
     # Wacom / スタイラスペン入力イベント処理
@@ -371,13 +356,8 @@ class SlideCanvas(QWidget):
 
         # 1. 消しゴム機能（ペン尻 または 消しゴムツール選択時）
         if is_eraser or tool == "eraser":
-            rect = self._get_slide_rect()
-            aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
-            eraser_size = self.controller.get_tool_size("eraser")
-            threshold = max(0.008, eraser_size * 0.001)
-
             if pressure > 0.0 and norm is not None:
-                self.controller.erase_at_point(norm[0], norm[1], threshold=threshold, aspect_ratio=aspect_ratio)
+                self._erase_at_norm(norm)
             self.hover_pos = norm
             self.update()
             event.accept()
@@ -386,7 +366,9 @@ class SlideCanvas(QWidget):
         # 2. レーザーポインタモード（ホバー時はポインタのみ、接地ドラッグ時は一時的な線を描画）
         if tool == "pointer":
             if norm is not None:
-                is_down = pressure > 0.05 or bool(event.buttons() & Qt.MouseButton.LeftButton)
+                is_down = (ev_type != QEvent.Type.TabletRelease) and (
+                    pressure > 0.05 or bool(event.buttons() & Qt.MouseButton.LeftButton)
+                )
                 self.controller.update_pointer(norm[0], norm[1], True, is_down=is_down)
             else:
                 self.controller.update_pointer(0, 0, False, is_down=False)
@@ -492,17 +474,11 @@ class SlideCanvas(QWidget):
             elif tool in ("pen", "highlighter"):
                 self.controller.begin_stroke(norm[0], norm[1], pressure=1.0)
             elif tool == "eraser":
-                rect = self._get_slide_rect()
-                aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
-                eraser_size = self.controller.get_tool_size("eraser")
-                threshold = max(0.008, eraser_size * 0.001)
-                self.controller.erase_at_point(norm[0], norm[1], threshold=threshold, aspect_ratio=aspect_ratio)
+                self._erase_at_norm(norm)
             elif tool == "hand":
                 self.controller.next_page()
             elif tool == "pointer":
-                self.is_pointer_down = True
-                if norm:
-                    self.controller.update_pointer(norm[0], norm[1], True, is_down=True)
+                self.controller.update_pointer(norm[0], norm[1], True, is_down=True)
         elif event.button() == Qt.MouseButton.RightButton:
             self.controller.prev_page()
 
@@ -570,7 +546,7 @@ class SlideCanvas(QWidget):
                     self.update()
 
             if tool == "pointer":
-                is_down = bool(event.buttons() & Qt.MouseButton.LeftButton) or self.is_pointer_down
+                is_down = bool(event.buttons() & Qt.MouseButton.LeftButton)
                 self.controller.update_pointer(norm[0], norm[1], True, is_down=is_down)
                 if link is None:
                     self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -581,11 +557,7 @@ class SlideCanvas(QWidget):
                 if link is None:
                     self.setCursor(Qt.CursorShape.CrossCursor)
                 if event.buttons() & Qt.MouseButton.LeftButton:
-                    rect = self._get_slide_rect()
-                    aspect_ratio = rect.width() / rect.height() if rect.height() > 0 else 1.0
-                    eraser_size = self.controller.get_tool_size("eraser")
-                    threshold = max(0.008, eraser_size * 0.001)
-                    self.controller.erase_at_point(norm[0], norm[1], threshold=threshold, aspect_ratio=aspect_ratio)
+                    self._erase_at_norm(norm)
                 self.hover_pos = norm
                 self.update()
             elif tool in ("pen", "highlighter"):
@@ -609,7 +581,6 @@ class SlideCanvas(QWidget):
                 self.hovered_link = None
                 self.update()
             if tool == "pointer":
-                self.is_pointer_down = False
                 self.controller.update_pointer(0, 0, False, is_down=False)
             self.setCursor(Qt.CursorShape.ArrowCursor)
             self.hover_pos = None
@@ -623,17 +594,17 @@ class SlideCanvas(QWidget):
             if tool in ("pen", "highlighter"):
                 self.controller.end_stroke()
             elif tool == "pointer":
-                self.is_pointer_down = False
                 norm = self._pos_to_normalized(event.position())
                 if norm:
                     self.controller.update_pointer(norm[0], norm[1], True, is_down=False)
+                else:
+                    self.controller.update_pointer(0, 0, False, is_down=False)
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event):
         if self.hovered_link is not None:
             self.hovered_link = None
         if self.controller.current_tool == "pointer":
-            self.is_pointer_down = False
             self.controller.update_pointer(0, 0, False, is_down=False)
         self.hover_pos = None
         self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -725,24 +696,16 @@ class SlideCanvas(QWidget):
                 ty = rect.top() + item.norm_y * rect.height()
                 painter.drawText(int(tx + 6), int(ty + metrics.ascent() + 3), item.text)
 
-        # 消しゴムカーソル（手元画面のみ、消去範囲を示す円）
-        if self.controller.current_tool == "eraser" and self.hover_pos:
+        # 通常消しゴムカーソル（手元画面のみ、消去範囲を示す円。オブジェクト消しゴムは大きさを持たないため描画しない）
+        if self.controller.current_tool == "eraser" and self.controller.eraser_mode == "partial" and self.hover_pos:
             hx = rect.left() + self.hover_pos[0] * rect.width()
             hy = rect.top() + self.hover_pos[1] * rect.height()
             size = self.controller.get_tool_size("eraser")
             eraser_r = max(6.0, base_dim * (size * 0.001))
 
-            if self.controller.eraser_mode == "partial":
-                # 通常消しゴム: くり抜く範囲を示す実線円＋半透明塗り
-                eraser_pen = QPen(QColor(255, 120, 120, 240), 1.5, Qt.PenStyle.SolidLine)
-                painter.setPen(eraser_pen)
-                painter.setBrush(QBrush(QColor(255, 100, 100, 45)))
-            else:
-                # オブジェクト消しゴム: 接触判定を示す点線円
-                eraser_pen = QPen(QColor(255, 160, 160, 200), 1.2, Qt.PenStyle.DashLine)
-                painter.setPen(eraser_pen)
-                painter.setBrush(QBrush(QColor(255, 255, 255, 20)))
-
+            eraser_pen = QPen(QColor(255, 120, 120, 240), 1.5, Qt.PenStyle.SolidLine)
+            painter.setPen(eraser_pen)
+            painter.setBrush(QBrush(QColor(255, 100, 100, 45)))
             painter.drawEllipse(QPointF(hx, hy), eraser_r, eraser_r)
 
         # ホバー時カーソル（手元画面のみ、ペン先の位置・太さを示すペンの色で塗りつぶした丸）
@@ -769,66 +732,9 @@ class SlideCanvas(QWidget):
             painter.setBrush(QBrush(fill_color))
             painter.drawEllipse(QPointF(hx, hy), curr_r, curr_r)
 
-        # レーザーポインタの一時的な線（軌跡）描画（各ストロークを独立したベジェ曲線として一括描画）
-        now = time.time()
-        lifetime = 0.45
-        fade_duration = 0.25
-
-        trails_to_draw: list[tuple[list[tuple[float, float, float]], float]] = []
-
-        # 1. 離されたフェードアウト中ストローク
-        for stroke_pts, rel_t in self.fading_trails:
-            elapsed = now - rel_t
-            f_alpha = max(0.0, min(1.0, 1.0 - elapsed / fade_duration))
-            if f_alpha > 0.0 and len(stroke_pts) >= 2:
-                trails_to_draw.append((stroke_pts, f_alpha))
-
-        # 2. 現在ドラッグ中のストローク
-        if self.current_trail:
-            active_pts = [p for p in self.current_trail if now - p[2] < lifetime]
-            if len(active_pts) >= 2:
-                trails_to_draw.append((active_pts, 1.0))
-
-        if trails_to_draw:
-            painter.save()
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            base_w = max(4.0, base_dim * 0.006)
-
-            for stroke_pts, fade_alpha in trails_to_draw:
-                smooth_path = create_smooth_path(
-                    stroke_pts,
-                    rect.left(),
-                    rect.top(),
-                    rect.width(),
-                    rect.height()
-                )
-
-                # 外側の光彩（グロー）: 継ぎ目のない単一パス
-                glow_alpha = int(120 * fade_alpha)
-                glow_pen = QPen(
-                    QColor(255, 30, 30, glow_alpha),
-                    base_w * 2.4,
-                    Qt.PenStyle.SolidLine,
-                    Qt.PenCapStyle.RoundCap,
-                    Qt.PenJoinStyle.RoundJoin
-                )
-                painter.setPen(glow_pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.strokePath(smooth_path, glow_pen)
-
-                # 中心の明るい線（コア）: 継ぎ目のない単一パス
-                core_alpha = int(245 * fade_alpha)
-                core_pen = QPen(
-                    QColor(255, 90, 90, core_alpha),
-                    base_w,
-                    Qt.PenStyle.SolidLine,
-                    Qt.PenCapStyle.RoundCap,
-                    Qt.PenJoinStyle.RoundJoin
-                )
-                painter.setPen(core_pen)
-                painter.strokePath(smooth_path, core_pen)
-
-            painter.restore()
+        # レーザーポインタの一時的な線（軌跡）描画
+        trails_to_draw = self.trail_manager.get_render_trails()
+        draw_laser_trails(painter, trails_to_draw, rect.left(), rect.top(), rect.width(), rect.height())
 
         # レーザーポインタ描画
         if self.is_pointer_visible and self.pointer_pos:

@@ -125,6 +125,7 @@ class MainWindow(QMainWindow):
 
         # iPad / Web リモート連携サーバーの初期化
         self._is_handling_web_stroke: bool = False
+        self._is_handling_web_pointer: bool = False
         self.web_bridge = WebBridge()
         self.web_server = WebServer(
             self.web_bridge,
@@ -755,6 +756,7 @@ class MainWindow(QMainWindow):
 
         # コントローラからの変化を Web クライアントへブロードキャスト（ツール選択は独立管理のため除外）
         self.controller.page_changed.connect(self._sync_web_page_changed)
+        self.controller.jump_history_changed.connect(self._sync_web_jump_history_changed)
         self.controller.stroke_started.connect(self._sync_web_stroke_started)
         self.controller.stroke_added_point.connect(self._sync_web_stroke_added_point)
         self.controller.stroke_finished.connect(self._sync_web_stroke_finished)
@@ -832,6 +834,7 @@ class MainWindow(QMainWindow):
             "isBlank": self.controller.is_blank,
             "isSketchbook": self.controller.is_sketchbook,
             "isSketchVisible": self.controller.is_sketch_visible,
+            "canJumpBack": self.controller.can_jump_back,
             "strokes": strokes_data,
             "links": links_data,
             "sketchbookStrokes": sketchbook_data,
@@ -883,7 +886,11 @@ class MainWindow(QMainWindow):
             self._is_handling_web_stroke = False
 
     def _on_web_pointer_updated(self, norm_x: float, norm_y: float, visible: bool, is_down: bool = False):
-        self.controller.update_pointer(norm_x, norm_y, visible, is_down=is_down)
+        self._is_handling_web_pointer = True
+        try:
+            self.controller.update_pointer(norm_x, norm_y, visible, is_down=is_down)
+        finally:
+            self._is_handling_web_pointer = False
 
     def _on_web_erase_requested(self, data: dict):
         norm_x = float(data.get("normX", 0.0))
@@ -920,6 +927,10 @@ class MainWindow(QMainWindow):
             self.controller.prev_page()
         elif cmd == "set":
             self.controller.set_page(page_idx)
+        elif cmd == "jump":
+            self.controller.jump_to_page(page_idx)
+        elif cmd == "jump_back":
+            self.controller.jump_back()
 
     def _on_web_undo_requested(self):
         self.controller.undo_current_page_stroke()
@@ -996,6 +1007,14 @@ class MainWindow(QMainWindow):
                 "totalPages": self.controller.total_pages,
                 "strokes": self._get_strokes_data_for_page(index),
                 "links": links_data,
+                "canJumpBack": self.controller.can_jump_back,
+            })
+
+    def _sync_web_jump_history_changed(self, can_jump_back: bool):
+        if hasattr(self, "web_server") and self.web_server:
+            self.web_server.broadcast({
+                "type": "jump_history_changed",
+                "canJumpBack": can_jump_back
             })
 
     def _sync_web_stroke_started(self, page_index: int, stroke):
@@ -1091,6 +1110,8 @@ class MainWindow(QMainWindow):
             })
 
     def _sync_web_pointer_updated(self, norm_x: float, norm_y: float, visible: bool, is_down: bool = False):
+        if self._is_handling_web_pointer:
+            return
         if hasattr(self, "web_server") and self.web_server:
             self.web_server.broadcast({
                 "type": "pointer_updated",

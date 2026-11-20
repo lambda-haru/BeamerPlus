@@ -1,5 +1,4 @@
 import os
-import time
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QTimer, QUrl
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
@@ -10,7 +9,10 @@ from PySide6.QtGui import (
     QPainterPath, QRadialGradient, QBrush, QFont, QDesktopServices
 )
 
-from beamerplus.DrawingModel import PresentationController, Stroke, TextItem, create_smooth_path
+from beamerplus.DrawingModel import (
+    PresentationController, Stroke, TextItem, create_smooth_path,
+    LaserTrailManager, draw_laser_trails,
+)
 from beamerplus.PdfReader import PdfLink
 
 # スライド短辺に対するポインタ半径の比率 (視認性の高い大きめのレーザーポインタ)
@@ -107,9 +109,7 @@ class Viewer(QMainWindow):
         self.active_points: list[tuple[float, float]] = []
 
         # レーザーポインタ一時軌跡（トレイル）管理
-        self.current_trail: list[tuple[float, float, float]] = []  # 現在ドラッグ中の軌跡 (norm_x, norm_y, timestamp)
-        self.fading_trails: list[tuple[list[tuple[float, float, float]], float]] = []  # 離されたフェードアウト中ストローク [(points, release_time), ...]
-        self.is_pointer_down: bool = False
+        self.trail_manager = LaserTrailManager()
         self.trail_timer = QTimer(self)
         self.trail_timer.setInterval(20)
         self.trail_timer.timeout.connect(self._on_trail_timer_tick)
@@ -138,6 +138,8 @@ class Viewer(QMainWindow):
 
     def connect_controller(self, controller: PresentationController):
         self.controller = controller
+        controller.page_changed.connect(self.on_page_changed)
+        controller.tool_changed.connect(self.on_tool_changed)
         controller.pointer_updated.connect(self.on_pointer_updated)
         controller.stroke_started.connect(self.on_stroke_started)
         controller.stroke_added_point.connect(self.on_stroke_added_point)
@@ -284,59 +286,47 @@ class Viewer(QMainWindow):
         self.scene.addItem(text_item)
         self.text_items.append(text_item)
 
+    def _clear_pointer_trails(self):
+        self.trail_manager.clear()
+        self.trail_timer.stop()
+        if self.pointer_item:
+            self.pointer_item.setVisible(False)
+        self.graphics_view.viewport().update()
+
+    def on_page_changed(self, page_index: int):
+        self._clear_pointer_trails()
+
+    def on_tool_changed(self, tool_name: str):
+        if tool_name != "pointer":
+            self._clear_pointer_trails()
+
     def on_pointer_updated(self, norm_x: float, norm_y: float, visible: bool, is_down: bool = False):
         if not self.pointer_item:
             return
-        now = time.time()
-        if not visible or self.is_blank or self.scene.sceneRect().isEmpty():
+        if self.is_blank or self.scene.sceneRect().isEmpty():
             self.pointer_item.setVisible(False)
-            if self.is_pointer_down:
-                self.is_pointer_down = False
-                if len(self.current_trail) >= 2:
-                    self.fading_trails.append((list(self.current_trail), now))
-                self.current_trail = []
+            if self.is_blank:
+                self._clear_pointer_trails()
             return
 
-        w = self.scene.sceneRect().width()
-        h = self.scene.sceneRect().height()
-        self.pointer_item.setPos(norm_x * w, norm_y * h)
-        self.pointer_item.setVisible(True)
+        if visible:
+            w = self.scene.sceneRect().width()
+            h = self.scene.sceneRect().height()
+            self.pointer_item.setPos(norm_x * w, norm_y * h)
+            self.pointer_item.setVisible(True)
+        else:
+            self.pointer_item.setVisible(False)
 
-        prev_down = self.is_pointer_down
-        self.is_pointer_down = is_down
-
-        if is_down:
-            if not prev_down:
-                # 新しいストロークの開始（前のストロークとは完全に分離）
-                if len(self.current_trail) >= 2:
-                    self.fading_trails.append((list(self.current_trail), now))
-                self.current_trail = [(norm_x, norm_y, now)]
-            else:
-                self.current_trail.append((norm_x, norm_y, now))
+        active = self.trail_manager.update(norm_x, norm_y, visible, is_down)
+        if active:
             if not self.trail_timer.isActive():
                 self.trail_timer.start()
-        elif prev_down and not is_down:
-            # 離した瞬間: 現在のストロークをフェードアウト一覧へ移行
-            if len(self.current_trail) >= 2:
-                self.fading_trails.append((list(self.current_trail), now))
-            self.current_trail = []
+        elif self.trail_timer.isActive():
+            self.trail_timer.stop()
+        self.graphics_view.viewport().update()
 
     def _on_trail_timer_tick(self):
-        now = time.time()
-        lifetime = 0.45      # ドラッグ中の軌跡の寿命（0.45秒）
-        fade_duration = 0.25 # 離した後のフェードアウト時間（0.25秒）
-
-        # ドラッグ中ストロークの古い点を削除
-        if self.current_trail:
-            self.current_trail = [p for p in self.current_trail if now - p[2] < lifetime]
-
-        # 離されてから 0.25秒 経過したフェードアウト中ストロークを削除
-        self.fading_trails = [
-            (pts, rel_t) for pts, rel_t in self.fading_trails
-            if now - rel_t < fade_duration
-        ]
-
-        if not self.current_trail and not self.fading_trails:
+        if not self.trail_manager.tick():
             self.trail_timer.stop()
         self.graphics_view.viewport().update()
 
@@ -344,62 +334,10 @@ class Viewer(QMainWindow):
         if self.is_blank or self.scene.sceneRect().isEmpty():
             return
 
-        now = time.time()
-        lifetime = 0.45
-        fade_duration = 0.25
-
-        trails_to_draw: list[tuple[list[tuple[float, float, float]], float]] = []
-
-        # 1. 離されたフェードアウト中ストローク
-        for stroke_pts, rel_t in self.fading_trails:
-            elapsed = now - rel_t
-            f_alpha = max(0.0, min(1.0, 1.0 - elapsed / fade_duration))
-            if f_alpha > 0.0 and len(stroke_pts) >= 2:
-                trails_to_draw.append((stroke_pts, f_alpha))
-
-        # 2. 現在ドラッグ中のストローク
-        if self.current_trail:
-            active_pts = [p for p in self.current_trail if now - p[2] < lifetime]
-            if len(active_pts) >= 2:
-                trails_to_draw.append((active_pts, 1.0))
-
-        if not trails_to_draw:
-            return
-
         sw = self.scene.sceneRect().width()
         sh = self.scene.sceneRect().height()
-        base_dim = min(sw, sh)
-        base_w = max(4.0, base_dim * 0.006)
-
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        for stroke_pts, fade_alpha in trails_to_draw:
-            smooth_path = create_smooth_path(stroke_pts, 0.0, 0.0, sw, sh)
-
-            # 1. 外側の光彩（グロー）: 継ぎ目のない単一パス
-            glow_alpha = int(120 * fade_alpha)
-            glow_pen = QPen(
-                QColor(255, 30, 30, glow_alpha),
-                base_w * 2.4,
-                Qt.PenStyle.SolidLine,
-                Qt.PenCapStyle.RoundCap,
-                Qt.PenJoinStyle.RoundJoin
-            )
-            painter.strokePath(smooth_path, glow_pen)
-
-            # 2. 中心の明るい線（コア）: 継ぎ目のない単一パス
-            core_alpha = int(245 * fade_alpha)
-            core_pen = QPen(
-                QColor(255, 90, 90, core_alpha),
-                base_w,
-                Qt.PenStyle.SolidLine,
-                Qt.PenCapStyle.RoundCap,
-                Qt.PenJoinStyle.RoundJoin
-            )
-            painter.strokePath(smooth_path, core_pen)
-
-        painter.restore()
+        trails_to_draw = self.trail_manager.get_render_trails()
+        draw_laser_trails(painter, trails_to_draw, 0.0, 0.0, sw, sh)
 
     def on_stroke_started(self, page_index: int, stroke: Stroke):
         if not self._is_target_page(page_index) or self.scene.sceneRect().isEmpty():
@@ -504,11 +442,7 @@ class Viewer(QMainWindow):
             self.blank_overlay.setGeometry(self.rect())
             self.blank_overlay.show()
             self.blank_overlay.raise_()
-            if self.pointer_item:
-                self.pointer_item.setVisible(False)
-            self.current_trail.clear()
-            self.fading_trails.clear()
-            self.trail_timer.stop()
+            self._clear_pointer_trails()
         else:
             self.blank_overlay.hide()
         self.blank_state_changed.emit(self.is_blank)
@@ -520,6 +454,7 @@ class Viewer(QMainWindow):
             item.setVisible(visible)
 
     def on_sketchbook_state_changed(self, enabled: bool):
+        self._clear_pointer_trails()
         self._clear_scene_strokes()
         self._clear_scene_texts()
 

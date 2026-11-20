@@ -321,34 +321,10 @@ HTML_CONTENT = """<!DOCTYPE html>
       font-weight: bold;
       padding: 6px 14px;
     }
-    #btn-eraser-mode, #btn-pointer-trail {
-      font-size: 11px;
-      font-weight: 600;
-      padding: 5px 8px;
-      min-width: 68px;
-      justify-content: center;
-      transition: all 0.2s ease;
-    }
-    #btn-eraser-mode {
-      color: #38bdf8;
-      border-color: rgba(56, 189, 248, 0.4);
-    }
-    #btn-pointer-trail {
-      color: #ff6b6b;
-      border-color: rgba(255, 107, 107, 0.4);
-    }
-    #btn-pointer-trail.off-mode {
-      color: #888888;
-      border-color: rgba(255, 255, 255, 0.15);
-    }
-    #btn-eraser-mode.disabled, #btn-pointer-trail.disabled, #btn-line.disabled {
+    #btn-line.disabled, #btn-jump-back.disabled {
       opacity: 0.35;
       pointer-events: none;
       filter: grayscale(1);
-    }
-    #btn-eraser-mode.stroke-mode {
-      color: #fbbf24;
-      border-color: rgba(251, 191, 36, 0.5);
     }
     #page-indicator {
       font-weight: 600;
@@ -363,24 +339,34 @@ HTML_CONTENT = """<!DOCTYPE html>
       background: rgba(255, 255, 255, 0.2);
       margin: 0 2px;
     }
-    /* 完全な色選択ピッカー */
+    /* 色・太さ統合ドロップダウントリガー（色のマル） */
     #color-picker-wrapper {
       position: relative;
-      width: 28px;
-      height: 28px;
+      width: 30px;
+      height: 30px;
       border-radius: 50%;
       cursor: pointer;
-      border: 2px solid rgba(255, 255, 255, 0.6);
+      border: 2px solid rgba(255, 255, 255, 0.7);
       box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
-      overflow: hidden;
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: transform 0.15s, border-color 0.2s;
+      transition: transform 0.15s, border-color 0.2s, opacity 0.2s;
       flex-shrink: 0;
+      padding: 0;
+      background: transparent;
     }
     #color-picker-wrapper:active {
       transform: scale(0.92);
+    }
+    #color-picker-wrapper.open {
+      border-color: #38bdf8;
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.55);
+    }
+    #color-picker-wrapper.disabled {
+      opacity: 0.35;
+      pointer-events: none;
+      filter: grayscale(1);
     }
     #color-indicator {
       width: 100%;
@@ -388,6 +374,98 @@ HTML_CONTENT = """<!DOCTYPE html>
       border-radius: 50%;
       background-color: #e53935;
       pointer-events: none;
+    }
+    #color-dropdown-caret {
+      position: absolute;
+      right: -3px;
+      bottom: -3px;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: #1e293b;
+      border: 1px solid rgba(255, 255, 255, 0.55);
+      color: #e2e8f0;
+      font-size: 8px;
+      line-height: 11px;
+      text-align: center;
+      pointer-events: none;
+    }
+    /* 色・太さ統合ドロップダウンポップオーバー */
+    #style-popover {
+      position: fixed;
+      top: 66px;
+      left: 50%;
+      z-index: 150;
+      width: 248px;
+      max-width: calc(100vw - 24px);
+      background: rgba(28, 28, 32, 0.96);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 16px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+      padding: 12px 14px;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      color: #f0f0f0;
+      box-sizing: border-box;
+    }
+    #style-popover.open {
+      display: flex;
+    }
+    .popover-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .popover-section.hidden {
+      display: none;
+    }
+    .popover-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #94a3b8;
+      font-weight: 600;
+    }
+    .color-swatches {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      align-items: center;
+      justify-items: center;
+    }
+    .color-swatch {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      cursor: pointer;
+      padding: 0;
+      transition: transform 0.12s, border-color 0.15s, box-shadow 0.15s;
+    }
+    .color-swatch:active {
+      transform: scale(0.9);
+    }
+    .color-swatch.selected {
+      border-color: #ffffff;
+      box-shadow: 0 0 0 2px #38bdf8;
+      transform: scale(1.06);
+    }
+    .custom-color-btn {
+      position: relative;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.55);
+      background: conic-gradient(#ef4444, #f59e0b, #eab308, #22c55e, #3b82f6, #a855f7, #ef4444);
+      overflow: hidden;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     #native-color-picker {
       position: absolute;
@@ -400,26 +478,91 @@ HTML_CONTENT = """<!DOCTYPE html>
       -webkit-appearance: none;
       border: none;
     }
-    /* 太さスライダー */
+    /* ドロップダウン内モード切替セグメントボタン */
+    .popover-segmented {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 4px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .popover-seg-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: #94a3b8;
+      padding: 7px 8px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .popover-seg-btn:active {
+      transform: scale(0.96);
+    }
+    .popover-seg-btn.active {
+      background: #007acc;
+      border-color: rgba(56, 189, 248, 0.6);
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(0, 122, 204, 0.35);
+    }
+    .popover-seg-btn.active.warn {
+      background: rgba(245, 158, 11, 0.25);
+      border-color: rgba(251, 191, 36, 0.65);
+      color: #fbbf24;
+      box-shadow: none;
+    }
+    .popover-seg-btn.active.trail-on {
+      background: rgba(239, 68, 68, 0.28);
+      border-color: rgba(248, 113, 113, 0.65);
+      color: #fca5a5;
+      box-shadow: none;
+    }
+    /* 太さスライダー（ドロップダウン内） */
     #size-wrapper {
       display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 0;
+    }
+    #size-wrapper.disabled {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+    .size-slider-row {
+      display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 0 4px;
+      gap: 10px;
+    }
+    #size-preview-box {
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    #size-preview-dot {
+      border-radius: 50%;
+      background-color: #e53935;
+      transition: width 0.08s, height 0.08s, background-color 0.15s;
     }
     #size-slider {
       -webkit-appearance: none;
-      width: 75px;
-      height: 4px;
-      border-radius: 2px;
+      flex: 1;
+      width: 100%;
+      height: 5px;
+      border-radius: 3px;
       background: #444448;
       outline: none;
       cursor: pointer;
     }
     #size-slider::-webkit-slider-thumb {
       -webkit-appearance: none;
-      width: 18px;
-      height: 18px;
+      width: 20px;
+      height: 20px;
       border-radius: 50%;
       background: #ffffff;
       border: 2px solid #007acc;
@@ -427,7 +570,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       cursor: pointer;
     }
     #size-val {
-      min-width: 22px;
+      min-width: 24px;
       text-align: right;
       font-size: 11px;
       color: #38bdf8;
@@ -705,6 +848,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div id="status-dot" title="切断中"></div>
 
       <!-- ページ送り -->
+      <button class="btn btn-nav disabled" id="btn-jump-back" title="直前のスライドに戻る" disabled>↩</button>
       <button class="btn btn-nav" id="btn-prev">◀</button>
       <span id="page-indicator">- / -</span>
       <button class="btn btn-nav" id="btn-next">▶</button>
@@ -716,24 +860,15 @@ HTML_CONTENT = """<!DOCTYPE html>
       <button class="btn" id="btn-highlighter" data-tool="highlighter" title="蛍光ペン">🖍️</button>
       <button class="btn" id="btn-line" title="直線モード（ペン/蛍光ペンで直線を引く）">📏</button>
       <button class="btn" id="btn-eraser" data-tool="eraser" title="消しゴム">🧹</button>
-      <button class="btn disabled" id="btn-eraser-mode" title="消しゴムモード切替（通常 / オブジェクト）">通常</button>
       <button class="btn" id="btn-pointer" data-tool="pointer" title="レーザーポインタ">🔴</button>
-      <button class="btn disabled" id="btn-pointer-trail" title="ポインタ軌跡切替（なぞった時に一時的な線を引く / ドットのみ）">軌跡ON</button>
 
       <div class="separator"></div>
 
-      <!-- 完全な色選択ピッカー -->
-      <div id="color-picker-wrapper" title="完全な色選択（タップでピッカーを開く）">
-        <input type="color" id="native-color-picker" value="#e53935">
+      <!-- 色・太さ統合ドロップダウントリガー -->
+      <button type="button" id="color-picker-wrapper" title="色と太さを変更">
         <div id="color-indicator"></div>
-      </div>
-
-      <!-- 太さ調整スライダー -->
-      <div id="size-wrapper" title="線の太さを変更">
-        <span style="font-size: 11px; color: #888;">太さ</span>
-        <input type="range" id="size-slider" min="1" max="30" value="5">
-        <span id="size-val">5</span>
-      </div>
+        <span id="color-dropdown-caret">▾</span>
+      </button>
 
       <div class="separator"></div>
 
@@ -763,6 +898,65 @@ HTML_CONTENT = """<!DOCTYPE html>
     <button id="ui-toggle">バーを隠す ▲</button>
   </div>
 
+  <!-- 色・太さドロップダウンポップオーバー -->
+  <div id="style-popover" role="dialog" aria-label="色と太さの設定">
+    <div class="popover-section" id="popover-color-section">
+      <div class="popover-header">
+        <span>色</span>
+        <span id="popover-color-hex" style="color: #cbd5e1; font-family: monospace;">#e53935</span>
+      </div>
+      <div class="color-swatches">
+        <button type="button" class="color-swatch" data-color="#e53935" style="background-color: #e53935;" title="赤"></button>
+        <button type="button" class="color-swatch" data-color="#1e88e5" style="background-color: #1e88e5;" title="青"></button>
+        <button type="button" class="color-swatch" data-color="#43a047" style="background-color: #43a047;" title="緑"></button>
+        <button type="button" class="color-swatch" data-color="#ffeb3b" style="background-color: #ffeb3b;" title="黄"></button>
+        <button type="button" class="color-swatch" data-color="#fb8c00" style="background-color: #fb8c00;" title="オレンジ"></button>
+        <button type="button" class="color-swatch" data-color="#8e24aa" style="background-color: #8e24aa;" title="紫"></button>
+        <button type="button" class="color-swatch" data-color="#ec407a" style="background-color: #ec407a;" title="ピンク"></button>
+        <button type="button" class="color-swatch" data-color="#111111" style="background-color: #111111;" title="黒"></button>
+        <button type="button" class="color-swatch" data-color="#ffffff" style="background-color: #ffffff;" title="白"></button>
+        <div class="custom-color-btn" title="その他の色をカラーピッカーで選択">
+          <input type="color" id="native-color-picker" value="#e53935">
+        </div>
+      </div>
+    </div>
+
+    <div class="popover-section hidden" id="popover-eraser-mode-section">
+      <div class="popover-header">
+        <span>消しゴムモード</span>
+        <span id="eraser-mode-desc" style="color: #cbd5e1;">部分消去</span>
+      </div>
+      <div class="popover-segmented" id="btn-eraser-mode">
+        <button type="button" class="popover-seg-btn active" id="btn-eraser-partial" data-eraser-mode="partial">通常</button>
+        <button type="button" class="popover-seg-btn" id="btn-eraser-stroke" data-eraser-mode="stroke">オブジェクト</button>
+      </div>
+    </div>
+
+    <div class="popover-section hidden" id="popover-pointer-trail-section">
+      <div class="popover-header">
+        <span>ポインタ軌跡</span>
+        <span id="pointer-trail-desc" style="color: #cbd5e1;">線を描画</span>
+      </div>
+      <div class="popover-segmented" id="btn-pointer-trail">
+        <button type="button" class="popover-seg-btn active trail-on" id="btn-pointer-trail-on" data-trail="true">軌跡ON</button>
+        <button type="button" class="popover-seg-btn" id="btn-pointer-trail-off" data-trail="false">軌跡OFF</button>
+      </div>
+    </div>
+
+    <div id="size-wrapper" class="popover-section" title="線の太さを変更">
+      <div class="popover-header">
+        <span id="size-label">太さ</span>
+        <span id="size-val">5</span>
+      </div>
+      <div class="size-slider-row">
+        <div id="size-preview-box">
+          <div id="size-preview-dot"></div>
+        </div>
+        <input type="range" id="size-slider" min="1" max="30" value="5">
+      </div>
+    </div>
+  </div>
+
   <script>
     const stage = document.getElementById('stage');
     const slideWrapper = document.getElementById('slide-wrapper');
@@ -777,15 +971,22 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     const statusDot = document.getElementById('status-dot');
     const pageIndicator = document.getElementById('page-indicator');
+    const btnJumpBack = document.getElementById('btn-jump-back');
     const btnPrev = document.getElementById('btn-prev');
     const btnNext = document.getElementById('btn-next');
     const btnPen = document.getElementById('btn-pen');
     const btnHighlighter = document.getElementById('btn-highlighter');
     const btnLine = document.getElementById('btn-line');
     const btnEraser = document.getElementById('btn-eraser');
-    const btnEraserMode = document.getElementById('btn-eraser-mode');
     const btnPointer = document.getElementById('btn-pointer');
-    const btnPointerTrail = document.getElementById('btn-pointer-trail');
+    const popoverEraserSection = document.getElementById('popover-eraser-mode-section');
+    const eraserModeDesc = document.getElementById('eraser-mode-desc');
+    const btnEraserPartial = document.getElementById('btn-eraser-partial');
+    const btnEraserStroke = document.getElementById('btn-eraser-stroke');
+    const popoverPointerSection = document.getElementById('popover-pointer-trail-section');
+    const pointerTrailDesc = document.getElementById('pointer-trail-desc');
+    const btnPointerTrailOn = document.getElementById('btn-pointer-trail-on');
+    const btnPointerTrailOff = document.getElementById('btn-pointer-trail-off');
     const btnClear = document.getElementById('btn-clear');
     const btnVisibility = document.getElementById('btn-visibility');
     const btnFullscreen = document.getElementById('btn-fullscreen');
@@ -794,10 +995,18 @@ HTML_CONTENT = """<!DOCTYPE html>
     const blankOverlay = document.getElementById('blank-overlay');
     const toast = document.getElementById('toast');
     const penOnlyToggle = document.getElementById('penOnlyToggle');
+    const colorWrapper = document.getElementById('color-picker-wrapper');
+    const stylePopover = document.getElementById('style-popover');
+    const popoverColorSection = document.getElementById('popover-color-section');
+    const popoverColorHex = document.getElementById('popover-color-hex');
+    const colorSwatches = document.querySelectorAll('.color-swatch');
     const colorPicker = document.getElementById('native-color-picker');
     const colorIndicator = document.getElementById('color-indicator');
+    const sizeWrapper = document.getElementById('size-wrapper');
+    const sizeLabel = document.getElementById('size-label');
     const sizeSlider = document.getElementById('size-slider');
     const sizeVal = document.getElementById('size-val');
+    const sizePreviewDot = document.getElementById('size-preview-dot');
     const uiBar = document.getElementById('ui-bar');
     const uiToggle = document.getElementById('ui-toggle');
     const zoomBadge = document.getElementById('zoom-badge');
@@ -893,6 +1102,14 @@ HTML_CONTENT = """<!DOCTYPE html>
     let pendingFingerAction = null;
     const activeTouchPointerIds = new Set();
     let hoverTimeoutId = null;
+    const TRAIL_GRACE_MS = 500;    // 離してからフェード開始までの猶予時間 (0.5秒)
+    const TRAIL_FADE_MS = 250;     // フェードアウト所要時間 (0.25秒)
+    const TRAIL_MIN_DIST_SQ = 1e-7;
+    let currentTrail = [];
+    let heldTrails = [];
+    let lastTrailReleaseTime = null;
+    let pointerIsDown = false;
+    let trailAnimId = null;
     let lastTapTime = 0;
     let lastTapX = 0;
     let lastTapY = 0;
@@ -1006,46 +1223,133 @@ HTML_CONTENT = """<!DOCTYPE html>
       return size * 0.001;
     }
 
+    function updateStyleTriggerUI() {
+      const hasColor = (currentTool !== 'eraser' && currentTool !== 'pointer');
+      const hasEraserMode = (currentTool === 'eraser');
+      const hasPointerMode = (currentTool === 'pointer');
+      const hasSize = !(currentTool === 'eraser' && eraserMode === 'stroke');
+
+      if (popoverColorSection) {
+        popoverColorSection.classList.toggle('hidden', !hasColor);
+      }
+      if (popoverEraserSection) {
+        popoverEraserSection.classList.toggle('hidden', !hasEraserMode);
+      }
+      if (popoverPointerSection) {
+        popoverPointerSection.classList.toggle('hidden', !hasPointerMode);
+      }
+
+      let displayColor = currentTool === 'highlighter' ? toolColors.highlighter : toolColors.pen;
+      if (currentTool === 'eraser') {
+        displayColor = '#94a3b8';
+      } else if (currentTool === 'pointer') {
+        displayColor = '#ef4444';
+      }
+
+      if (colorIndicator) {
+        colorIndicator.style.backgroundColor = displayColor;
+      }
+
+      if (colorWrapper) {
+        colorWrapper.disabled = false;
+        colorWrapper.classList.remove('disabled');
+        if (hasEraserMode) {
+          colorWrapper.title = '消しゴムの設定（モード・半径）';
+        } else if (hasPointerMode) {
+          colorWrapper.title = 'ポインタの設定（軌跡・半径）';
+        } else {
+          colorWrapper.title = '色と太さを変更';
+        }
+      }
+
+      if (sizePreviewDot) {
+        if (!hasSize) {
+          sizePreviewDot.style.width = '8px';
+          sizePreviewDot.style.height = '8px';
+          sizePreviewDot.style.backgroundColor = displayColor;
+          sizePreviewDot.style.opacity = '0.35';
+        } else {
+          const minV = Number(sizeSlider.min) || 1;
+          const maxV = Number(sizeSlider.max) || 50;
+          const val = Number(sizeSlider.value) || 5;
+          const ratio = maxV > minV ? Math.max(0, Math.min(1, (val - minV) / (maxV - minV))) : 0.5;
+          const dotPx = Math.round(4 + ratio * 20);
+          sizePreviewDot.style.width = dotPx + 'px';
+          sizePreviewDot.style.height = dotPx + 'px';
+          sizePreviewDot.style.backgroundColor = displayColor;
+          sizePreviewDot.style.opacity = currentTool === 'highlighter' ? '0.6' : '1';
+        }
+      }
+    }
+
     function updateSizeUI() {
+      if (currentTool === 'eraser' && eraserMode === 'stroke') {
+        if (sizeWrapper) {
+          sizeWrapper.classList.add('disabled');
+          sizeWrapper.title = 'オブジェクト消しゴムはサイズ不要です';
+        }
+        sizeSlider.disabled = true;
+        if (sizeLabel) sizeLabel.innerText = 'サイズ';
+        sizeVal.innerText = '-';
+        updateStyleTriggerUI();
+        return;
+      }
+
+      if (sizeWrapper) {
+        sizeWrapper.classList.remove('disabled');
+        sizeWrapper.title = '線の太さを変更';
+      }
+      sizeSlider.disabled = false;
       const tool = currentTool || 'pen';
+      if (sizeLabel) {
+        sizeLabel.innerText = (tool === 'eraser' || tool === 'pointer') ? '半径' : '太さ';
+      }
       const range = toolRanges[tool] || [1, 50];
       sizeSlider.min = range[0];
       sizeSlider.max = range[1];
       const curSize = toolSizes[tool] !== undefined ? toolSizes[tool] : 5;
       sizeSlider.value = curSize;
       sizeVal.innerText = curSize;
+      updateStyleTriggerUI();
     }
 
     sizeSlider.addEventListener('input', (e) => {
+      if (currentTool === 'eraser' && eraserMode === 'stroke') return;
       const val = parseInt(e.target.value, 10);
       const tool = currentTool || 'pen';
       toolSizes[tool] = val;
       sizeVal.innerText = val;
+      updateStyleTriggerUI();
     });
 
     // 消しゴムモード切替 UI 更新
     function updateEraserModeUI() {
-      if (eraserMode === 'stroke') {
-        btnEraserMode.innerText = 'オブジェクト';
-        btnEraserMode.classList.add('stroke-mode');
-        btnEraserMode.title = '消しゴム: オブジェクト（線全体を消去。タップで通常に切替）';
-      } else {
-        btnEraserMode.innerText = '通常';
-        btnEraserMode.classList.remove('stroke-mode');
-        btnEraserMode.title = '消しゴム: 通常（なぞった部分のみ消去。タップでオブジェクトに切替）';
+      const isStroke = (eraserMode === 'stroke');
+      if (btnEraserPartial) {
+        btnEraserPartial.classList.toggle('active', !isStroke);
       }
-
-      if (currentTool === 'eraser') {
-        btnEraserMode.classList.remove('disabled');
-      } else {
-        btnEraserMode.classList.add('disabled');
+      if (btnEraserStroke) {
+        btnEraserStroke.classList.toggle('active', isStroke);
+        btnEraserStroke.classList.toggle('warn', isStroke);
+      }
+      if (eraserModeDesc) {
+        eraserModeDesc.innerText = isStroke ? '線全体を消去' : '部分消去';
       }
     }
 
-    btnEraserMode.addEventListener('click', (e) => {
-      e.stopPropagation();
-      eraserMode = (eraserMode === 'partial') ? 'stroke' : 'partial';
+    function setEraserMode(mode) {
+      if (mode !== 'partial' && mode !== 'stroke') return;
+      eraserMode = mode;
       updateEraserModeUI();
+      updateSizeUI();
+    }
+
+    [btnEraserPartial, btnEraserStroke].forEach(btn => {
+      if (!btn) return;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setEraserMode(btn.dataset.eraserMode);
+      });
     });
 
     // 直線モード UI 更新
@@ -1068,48 +1372,62 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     // ポインタ軌跡切替 UI 更新
     function updatePointerTrailUI() {
-      if (isPointerTrailEnabled) {
-        btnPointerTrail.innerText = '軌跡ON';
-        btnPointerTrail.classList.remove('off-mode');
-        btnPointerTrail.title = 'ポインタ: 軌跡ON（なぞった時に一時的な線を描画。タップでOFFに切替）';
-      } else {
-        btnPointerTrail.innerText = '軌跡OFF';
-        btnPointerTrail.classList.add('off-mode');
-        btnPointerTrail.title = 'ポインタ: 軌跡OFF（ドット移動のみ。タップでONに切替）';
+      if (btnPointerTrailOn) {
+        btnPointerTrailOn.classList.toggle('active', isPointerTrailEnabled);
+        btnPointerTrailOn.classList.toggle('trail-on', isPointerTrailEnabled);
       }
-
-      if (currentTool === 'pointer') {
-        btnPointerTrail.classList.remove('disabled');
-      } else {
-        btnPointerTrail.classList.add('disabled');
+      if (btnPointerTrailOff) {
+        btnPointerTrailOff.classList.toggle('active', !isPointerTrailEnabled);
+      }
+      if (pointerTrailDesc) {
+        pointerTrailDesc.innerText = isPointerTrailEnabled ? '線を描画' : 'ドットのみ';
       }
     }
 
-    btnPointerTrail.addEventListener('click', (e) => {
-      e.stopPropagation();
-      isPointerTrailEnabled = !isPointerTrailEnabled;
+    function setPointerTrailEnabled(enabled) {
+      isPointerTrailEnabled = !!enabled;
       try {
         localStorage.setItem('beamerplus_pointer_trail', String(isPointerTrailEnabled));
       } catch (_) {}
       if (!isPointerTrailEnabled) {
-        currentTrail = [];
-        fadingTrails = [];
-        pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
+        clearPointerTrails();
       }
       updatePointerTrailUI();
+    }
+
+    [btnPointerTrailOn, btnPointerTrailOff].forEach(btn => {
+      if (!btn) return;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setPointerTrailEnabled(btn.dataset.trail === 'true');
+      });
     });
+
+    // ジャンプ復帰ボタン UI 更新
+    function updateJumpBackUI(canJumpBack) {
+      if (!btnJumpBack) return;
+      const enabled = !!canJumpBack;
+      btnJumpBack.disabled = !enabled;
+      btnJumpBack.classList.toggle('disabled', !enabled);
+    }
 
     // スケッチブック / ブランク UI 更新
     function updateBlankUI(enabled) {
       isBlank = !!enabled;
       btnBlank.classList.toggle('active', isBlank);
       blankOverlay.classList.toggle('active', isBlank);
+      if (isBlank) {
+        if (laserDot) laserDot.style.display = 'none';
+        clearPointerTrails();
+      }
     }
 
     function updateSketchbookUI(enabled, strokes) {
       isSketchbook = !!enabled;
       btnSketchbook.classList.toggle('active', isSketchbook);
       slideWrapper.classList.toggle('sketchbook', isSketchbook);
+      if (laserDot) laserDot.style.display = 'none';
+      clearPointerTrails();
       if (isSketchbook) {
         if (strokes) sketchbookStrokes = strokes;
         renderAllStrokes(sketchbookStrokes);
@@ -1367,9 +1685,12 @@ HTML_CONTENT = """<!DOCTYPE html>
         isDrawing = false;
         activeDrawingTouchId = null;
         currentStrokePoints = [];
+        if (laserDot) laserDot.style.display = 'none';
+        clearPointerTrails();
         clearAllCanvases();
         renderAllStrokes(isSketchbook ? sketchbookStrokes : slideStrokes);
         loadSlideImage(currentPage);
+        if (msg.canJumpBack !== undefined) updateJumpBackUI(msg.canJumpBack);
         if (msg.type === 'state_sync') {
           if (msg.color) toolColors.pen = msg.color;
           if (msg.highlighterColor) toolColors.highlighter = msg.highlighterColor;
@@ -1391,6 +1712,8 @@ HTML_CONTENT = """<!DOCTYPE html>
             updateSketchbookUI(msg.isSketchbook, msg.isSketchbook ? sketchbookStrokes : slideStrokes);
           }
         }
+      } else if (msg.type === 'jump_history_changed') {
+        updateJumpBackUI(msg.canJumpBack);
       } else if (msg.type === 'blank_changed') {
         updateBlankUI(msg.enabled);
       } else if (msg.type === 'sketchbook_changed') {
@@ -1514,6 +1837,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       // Canvas サイズ変更により描画バッファがクリアされるため、保持しているストロークを必ず再描画
       const currentStrokes = isSketchbook ? sketchbookStrokes : slideStrokes;
       renderAllStrokes(currentStrokes);
+      if (!trailAnimId && (currentTrail.length > 0 || heldTrails.length > 0)) {
+        trailAnimId = requestAnimationFrame(renderPointerTrail);
+      }
     }
 
     window.addEventListener('resize', adjustLayout);
@@ -1521,7 +1847,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     function clearAllCanvases() {
       committedCtx.clearRect(0, 0, committedCanvas.width, committedCanvas.height);
       activeCtx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
-      pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
     }
 
     function drawStroke(targetCtx, stroke) {
@@ -2138,7 +2463,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             if (link) {
               if (link.page !== null && link.page !== undefined) {
                 resetZoom(false);
-                sendWS({ type: 'set_page', page: link.page });
+                sendWS({ type: 'jump_to_page', page: link.page });
               } else if (link.uri) {
                 window.open(link.uri, '_blank');
               }
@@ -2294,43 +2619,78 @@ HTML_CONTENT = """<!DOCTYPE html>
     uiBar.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
 
     // ポインタの一時的な軌跡（トレイル）管理
-    let currentTrail = [];
-    let fadingTrails = []; // [{ points: [{x, y, t}, ...], releaseTime: number }]
-    let pointerIsDown = false;
-    let trailAnimId = null;
+    function clearPointerTrails() {
+      currentTrail = [];
+      heldTrails = [];
+      lastTrailReleaseTime = null;
+      pointerIsDown = false;
+      if (trailAnimId) {
+        cancelAnimationFrame(trailAnimId);
+        trailAnimId = null;
+      }
+      pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
+    }
+
+    function pruneExpiredHeldTrails(now) {
+      if (!pointerIsDown && heldTrails.length > 0 && lastTrailReleaseTime !== null) {
+        if ((now - lastTrailReleaseTime) >= (TRAIL_GRACE_MS + TRAIL_FADE_MS)) {
+          heldTrails = [];
+          lastTrailReleaseTime = null;
+        }
+      }
+    }
+
+    function finishCurrentTrail(now) {
+      if (currentTrail.length > 0) {
+        heldTrails.push(currentTrail);
+        currentTrail = [];
+        lastTrailReleaseTime = now;
+      }
+    }
 
     function addPointerTrailPoint(nx, ny) {
-      currentTrail.push({ x: nx, y: ny, t: Date.now() });
+      if (currentTrail.length === 0) {
+        currentTrail.push({ x: nx, y: ny });
+      } else {
+        const last = currentTrail[currentTrail.length - 1];
+        const dx = nx - last.x;
+        const dy = ny - last.y;
+        if (dx * dx + dy * dy >= TRAIL_MIN_DIST_SQ) {
+          currentTrail.push({ x: nx, y: ny });
+        }
+      }
       if (!trailAnimId) {
         trailAnimId = requestAnimationFrame(renderPointerTrail);
       }
     }
 
     function renderPointerTrail() {
-      const now = Date.now();
-      const lifetime = 450;      // 0.45秒
-      const fadeDuration = 250;  // 0.25秒
-
-      if (currentTrail.length > 0) {
-        currentTrail = currentTrail.filter(p => now - p.t < lifetime);
-      }
-      fadingTrails = fadingTrails.filter(t => now - t.releaseTime < fadeDuration);
+      const now = performance.now();
+      pruneExpiredHeldTrails(now);
 
       pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
 
+      let heldAlpha = 1.0;
+      if (!pointerIsDown && lastTrailReleaseTime !== null) {
+        const elapsed = now - lastTrailReleaseTime;
+        if (elapsed > TRAIL_GRACE_MS) {
+          heldAlpha = Math.max(0, Math.min(1, 1 - (elapsed - TRAIL_GRACE_MS) / TRAIL_FADE_MS));
+        }
+      }
+
       const trailsToDraw = [];
 
-      // 1. 離されたフェードアウト中ストローク
-      for (const t of fadingTrails) {
-        const elapsed = now - t.releaseTime;
-        const alpha = Math.max(0, Math.min(1, 1 - elapsed / fadeDuration));
-        if (alpha > 0 && t.points.length >= 2) {
-          trailsToDraw.push({ points: t.points, alpha: alpha });
+      // 1. 保持中・フェード中（再書き込み時は即復活）のストローク
+      if (heldAlpha > 0) {
+        for (const pts of heldTrails) {
+          if (pts.length > 0) {
+            trailsToDraw.push({ points: pts, alpha: heldAlpha });
+          }
         }
       }
 
       // 2. 現在ドラッグ中のストローク
-      if (currentTrail.length >= 2) {
+      if (currentTrail.length > 0) {
         trailsToDraw.push({ points: currentTrail, alpha: 1.0 });
       }
 
@@ -2346,6 +2706,21 @@ HTML_CONTENT = """<!DOCTYPE html>
         for (const item of trailsToDraw) {
           const pts = item.points;
           const alpha = item.alpha;
+
+          if (pts.length === 1) {
+            const px = pts[0].x * w;
+            const py = pts[0].y * h;
+            pointerCtx.beginPath();
+            pointerCtx.arc(px, py, baseW * 1.2, 0, Math.PI * 2);
+            pointerCtx.fillStyle = `rgba(255, 30, 30, ${0.45 * alpha})`;
+            pointerCtx.fill();
+
+            pointerCtx.beginPath();
+            pointerCtx.arc(px, py, baseW * 0.5, 0, Math.PI * 2);
+            pointerCtx.fillStyle = `rgba(255, 90, 90, ${0.95 * alpha})`;
+            pointerCtx.fill();
+            continue;
+          }
 
           pointerCtx.beginPath();
           const p0x = pts[0].x * w;
@@ -2385,7 +2760,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
       }
 
-      if (currentTrail.length > 0 || fadingTrails.length > 0) {
+      if (currentTrail.length > 0 || heldTrails.length > 0) {
         trailAnimId = requestAnimationFrame(renderPointerTrail);
       } else {
         trailAnimId = null;
@@ -2393,41 +2768,38 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     function updateLaserDot(normX, normY, visible, isDown) {
+      const now = performance.now();
+      pruneExpiredHeldTrails(now);
+
       const prevDown = pointerIsDown;
-      pointerIsDown = !!isDown;
-      const now = Date.now();
+      const nextDown = !!(visible && isDown);
+      pointerIsDown = nextDown;
 
       if (visible) {
         laserDot.style.display = 'block';
         laserDot.style.left = (normX * 100) + '%';
         laserDot.style.top = (normY * 100) + '%';
-        if (isDown) {
-          if (!prevDown) {
-            // 新しいストロークの開始（前のストロークとは完全に分離）
-            if (currentTrail.length >= 2) {
-              fadingTrails.push({ points: [...currentTrail], releaseTime: now });
-            }
-            currentTrail = [{ x: normX, y: normY, t: now }];
-            if (!trailAnimId) {
-              trailAnimId = requestAnimationFrame(renderPointerTrail);
-            }
-          } else {
-            addPointerTrailPoint(normX, normY);
-          }
-        } else if (prevDown && !isDown) {
-          // 離した瞬間
-          if (currentTrail.length >= 2) {
-            fadingTrails.push({ points: [...currentTrail], releaseTime: now });
-          }
-          currentTrail = [];
-        }
       } else {
         laserDot.style.display = 'none';
-        if (prevDown) {
-          if (currentTrail.length >= 2) {
-            fadingTrails.push({ points: [...currentTrail], releaseTime: now });
+      }
+
+      if (nextDown) {
+        // 猶予中またはフェード中に再度書き込みがあれば、残っている軌跡を不透明度100%へ復活させて維持
+        lastTrailReleaseTime = null;
+        if (!prevDown) {
+          // 新しいストロークの開始
+          currentTrail = [{ x: normX, y: normY }];
+          if (!trailAnimId) {
+            trailAnimId = requestAnimationFrame(renderPointerTrail);
           }
-          currentTrail = [];
+        } else {
+          addPointerTrailPoint(normX, normY);
+        }
+      } else if (prevDown) {
+        // ペン・指・マウスを離した瞬間（連続描画の猶予時間開始）
+        finishCurrentTrail(now);
+        if (!trailAnimId) {
+          trailAnimId = requestAnimationFrame(renderPointerTrail);
         }
       }
     }
@@ -2479,6 +2851,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     activeCanvas.addEventListener('pointerdown', (e) => {
       if (currentTool !== 'pointer') return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
       const penOnly = penOnlyToggle.checked;
       if (e.pointerType === 'touch' && penOnly) return;
       if (e.pointerType === 'touch' && (isPinching || pinchGestureActive || activeTouchPointerIds.size >= 2)) {
@@ -2493,6 +2866,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       e.preventDefault();
       const pos = getPointerNormPos(e);
+      if (!pos.isInside) return;
       const effectiveDown = isPointerTrailEnabled;
       updateLaserDot(pos.normX, pos.normY, true, effectiveDown);
       sendWS({ type: 'pointer_move', normX: pos.normX, normY: pos.normY, visible: true, isDown: effectiveDown });
@@ -2551,16 +2925,92 @@ HTML_CONTENT = """<!DOCTYPE html>
       sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
     });
 
-    // --- 完全な色選択・カラーピッカー操作 ---
+    // --- 色・太さ統合ドロップダウン & カラーピッカー操作 ---
     function applyColor(hex, targetTool = null) {
       const tool = targetTool || (currentTool === 'highlighter' ? 'highlighter' : 'pen');
       if (toolColors[tool] !== undefined) {
         toolColors[tool] = hex;
       }
+      const activeColorTool = (currentTool === 'highlighter') ? 'highlighter' : 'pen';
+      if (tool !== activeColorTool && targetTool !== null) {
+        return;
+      }
       currentColor = hex;
       if (colorPicker) colorPicker.value = hex;
-      if (colorIndicator) colorIndicator.style.backgroundColor = hex;
+      if (popoverColorHex) popoverColorHex.innerText = hex.toLowerCase();
+      colorSwatches.forEach(swatch => {
+        const sc = (swatch.dataset.color || '').toLowerCase();
+        swatch.classList.toggle('selected', sc === hex.toLowerCase());
+      });
+      updateStyleTriggerUI();
     }
+
+    function positionStylePopover() {
+      if (!stylePopover || !colorWrapper || !stylePopover.classList.contains('open')) return;
+      const rect = colorWrapper.getBoundingClientRect();
+      const popW = stylePopover.offsetWidth || 248;
+      const margin = 12;
+      let left = rect.left + rect.width / 2 - popW / 2;
+      left = Math.max(margin, Math.min(window.innerWidth - popW - margin, left));
+      const top = Math.round(rect.bottom + 10);
+      stylePopover.style.left = left + 'px';
+      stylePopover.style.top = top + 'px';
+    }
+
+    function closeStylePopover() {
+      if (!stylePopover) return;
+      stylePopover.classList.remove('open');
+      if (colorWrapper) colorWrapper.classList.remove('open');
+    }
+
+    function openStylePopover() {
+      if (!stylePopover || (colorWrapper && colorWrapper.disabled)) return;
+      stylePopover.classList.add('open');
+      if (colorWrapper) colorWrapper.classList.add('open');
+      updateStyleTriggerUI();
+      positionStylePopover();
+    }
+
+    if (colorWrapper) {
+      colorWrapper.addEventListener('pointerdown', (e) => e.stopPropagation());
+      colorWrapper.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (stylePopover && stylePopover.classList.contains('open')) {
+          closeStylePopover();
+        } else {
+          openStylePopover();
+        }
+      });
+    }
+
+    if (stylePopover) {
+      ['touchstart', 'touchmove', 'touchend'].forEach(evtName => {
+        stylePopover.addEventListener(evtName, (e) => e.stopPropagation(), { passive: true });
+      });
+      ['pointerdown', 'click'].forEach(evtName => {
+        stylePopover.addEventListener(evtName, (e) => e.stopPropagation());
+      });
+    }
+
+    document.addEventListener('pointerdown', (e) => {
+      if (!stylePopover || !stylePopover.classList.contains('open')) return;
+      if (stylePopover.contains(e.target) || (colorWrapper && colorWrapper.contains(e.target))) return;
+      closeStylePopover();
+    });
+
+    window.addEventListener('resize', positionStylePopover);
+    uiBar.addEventListener('scroll', positionStylePopover, { passive: true });
+
+    colorSwatches.forEach(swatch => {
+      swatch.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const hex = swatch.dataset.color;
+        if (!hex) return;
+        applyColor(hex);
+        const tool = (currentTool === 'highlighter') ? 'highlighter' : 'pen';
+        sendWS({ type: 'set_color', tool: tool, color: hex });
+      });
+    });
 
     if (colorPicker) {
       colorPicker.addEventListener('input', (e) => {
@@ -2583,9 +3033,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (currentTool === 'pointer') {
           if (hoverTimeoutId) { clearTimeout(hoverTimeoutId); hoverTimeoutId = null; }
           if (laserDot) laserDot.style.display = 'none';
-          currentTrail = [];
-          fadingTrails = [];
-          pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
+          clearPointerTrails();
           sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
         }
         currentTool = null;
@@ -2594,9 +3042,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (currentTool === 'pointer' && toolName !== 'pointer') {
           if (hoverTimeoutId) { clearTimeout(hoverTimeoutId); hoverTimeoutId = null; }
           if (laserDot) laserDot.style.display = 'none';
-          currentTrail = [];
-          fadingTrails = [];
-          pointerCtx.clearRect(0, 0, pointerCanvas.width, pointerCanvas.height);
+          clearPointerTrails();
           sendWS({ type: 'pointer_move', normX: 0, normY: 0, visible: false, isDown: false });
         }
         currentTool = toolName;
@@ -2626,6 +3072,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     });
 
     // ページ操作ボタン
+    btnJumpBack.addEventListener('click', () => {
+      resetZoom(false);
+      sendWS({ type: 'jump_back' });
+    });
     btnPrev.addEventListener('click', () => {
       resetZoom(false);
       sendWS({ type: 'prev_page' });
@@ -2643,12 +3093,14 @@ HTML_CONTENT = """<!DOCTYPE html>
     let isBarHidden = false;
     uiToggle.addEventListener('click', () => {
       isBarHidden = !isBarHidden;
+      if (isBarHidden) closeStylePopover();
       uiBar.style.display = isBarHidden ? 'none' : 'flex';
       uiToggle.innerText = isBarHidden ? 'バーを表示 ▼' : 'バーを隠す ▲';
     });
 
     // 初期状態の UI 反映（どのツールも未選択の状態）
     selectTool(null);
+    applyColor(toolColors.pen, 'pen');
     updateEraserModeUI();
     updateLineModeUI();
     updatePointerTrailUI();
@@ -2670,7 +3122,7 @@ class WebBridge(QObject):
     eraser_mode_command = Signal(str)  # "partial" または "stroke"
     line_mode_command = Signal(bool)    # 直線モード ON/OFF
     line_update_command = Signal(float, float) # 直線終点更新
-    page_command = Signal(str, int)  # "next", "prev", "set", page_idx
+    page_command = Signal(str, int)  # "next", "prev", "set", "jump", "jump_back", page_idx
     tool_command = Signal(str)
     tool_size_command = Signal(str, int)
     color_command = Signal(str, str)
@@ -2922,6 +3374,10 @@ class WebServer:
             self.bridge.page_command.emit("next", 0)
         elif msg_type == "set_page":
             self.bridge.page_command.emit("set", int(data.get("page", 0)))
+        elif msg_type == "jump_to_page":
+            self.bridge.page_command.emit("jump", int(data.get("page", 0)))
+        elif msg_type == "jump_back":
+            self.bridge.page_command.emit("jump_back", 0)
         elif msg_type == "set_tool":
             self.bridge.tool_command.emit(str(data.get("tool", "pen")))
         elif msg_type == "set_tool_size":

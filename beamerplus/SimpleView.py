@@ -281,6 +281,7 @@ class SimpleView(QWidget):
         else:
             self.btn_eraser_mode.setText("オブジェクト")
             self.btn_eraser_mode.setToolTip("消しゴムモード: オブジェクト（線全体を消去。クリックで通常消しゴムに切替）")
+        self._update_size_controls()
 
     def _choose_color(self):
         # 現在アクティブなツールの色を変更
@@ -336,6 +337,30 @@ class SimpleView(QWidget):
         self.controller.set_current_tool_size(val)
         self.lbl_size_val.setText(str(val))
 
+    def _update_size_controls(self):
+        tool_name = self.controller.current_tool
+        if tool_name == "hand" or (tool_name == "eraser" and self.controller.eraser_mode == "stroke"):
+            self.size_slider.setEnabled(False)
+            self.lbl_size_title.setText("サイズ:")
+            self.lbl_size_val.setText("-")
+            return
+
+        self.size_slider.setEnabled(True)
+        if tool_name in ("pointer", "eraser"):
+            self.lbl_size_title.setText("半径:")
+        elif tool_name == "text":
+            self.lbl_size_title.setText("サイズ:")
+        else:
+            self.lbl_size_title.setText("太さ:")
+
+        min_v, max_v = self.controller.get_tool_range(tool_name)
+        size = self.controller.get_tool_size(tool_name)
+        self.size_slider.blockSignals(True)
+        self.size_slider.setRange(min_v, max_v)
+        self.size_slider.setValue(size)
+        self.size_slider.blockSignals(False)
+        self.lbl_size_val.setText(str(size))
+
     def _on_tool_changed(self, tool_name: str):
         # 1. 各ボタンのチェック状態を同期
         for name, btn in self.tool_buttons.items():
@@ -352,29 +377,12 @@ class SimpleView(QWidget):
         self.btn_line.setEnabled(tool_name not in ("eraser", "text"))
 
         # 5. スライダーを該当ツールの保持サイズ・範囲に更新
-        if tool_name == "hand":
-            self.size_slider.setEnabled(False)
-            self.lbl_size_title.setText("サイズ:")
-            self.lbl_size_val.setText("-")
-        else:
-            self.size_slider.setEnabled(True)
-            if tool_name in ("pointer", "eraser"):
-                self.lbl_size_title.setText("半径:")
-            elif tool_name == "text":
-                self.lbl_size_title.setText("サイズ:")
-            else:
-                self.lbl_size_title.setText("太さ:")
-
-            min_v, max_v = self.controller.get_tool_range(tool_name)
-            size = self.controller.get_tool_size(tool_name)
-            self.size_slider.blockSignals(True)
-            self.size_slider.setRange(min_v, max_v)
-            self.size_slider.setValue(size)
-            self.size_slider.blockSignals(False)
-            self.lbl_size_val.setText(str(size))
+        self._update_size_controls()
 
     def _on_tool_size_changed(self, tool_name: str, size: int):
         if tool_name == self.controller.current_tool:
+            if tool_name == "eraser" and self.controller.eraser_mode == "stroke":
+                return
             min_v, max_v = self.controller.get_tool_range(tool_name)
             self.size_slider.blockSignals(True)
             self.size_slider.setRange(min_v, max_v)

@@ -9,8 +9,10 @@ from PySide6.QtCore import Qt, QPointF, QEvent
 
 from beamerplus.PdfReader import PdfReader, PdfLink
 from beamerplus.DrawingModel import PresentationController
+from beamerplus.MainWindow import MainWindow
 from beamerplus.SlideCanvas import SlideCanvas
 from beamerplus.Viewer import Viewer
+from beamerplus.WebServer import HTML_CONTENT
 
 
 class TestHyperrefFunctionality(unittest.TestCase):
@@ -404,6 +406,64 @@ class TestHyperrefFunctionality(unittest.TestCase):
 
         controller.jump_back()
         self.assertEqual(controller.current_page, 0)
+
+    def test_web_ipad_link_jump_and_jump_back_sync(self):
+        win = MainWindow()
+        try:
+            win.controller.set_total_pages(10)
+            broadcasted = []
+            win.web_server.broadcast = lambda msg: broadcasted.append(msg)
+
+            # 1. iPad 側からリンクジャンプ ("jump_to_page") を送信すると履歴が記録され PC 戻るボタンも有効化される
+            win.web_server._handle_client_message({"type": "jump_to_page", "page": 6})
+            self.app.processEvents()
+
+            self.assertEqual(win.controller.current_page, 6)
+            self.assertTrue(win.controller.can_jump_back)
+            self.assertTrue(win.slide_view.btn_jump_back.isEnabled())
+            self.assertTrue(win._get_web_status()["canJumpBack"])
+            self.assertTrue(
+                any(m.get("type") == "jump_history_changed" and m.get("canJumpBack") is True for m in broadcasted)
+            )
+
+            # 2. iPad 側でジャンプした後、PC 側の戻るボタンを押して元のページへ戻れること
+            broadcasted.clear()
+            win.slide_view.btn_jump_back.click()
+            self.app.processEvents()
+
+            self.assertEqual(win.controller.current_page, 0)
+            self.assertFalse(win.controller.can_jump_back)
+            self.assertFalse(win.slide_view.btn_jump_back.isEnabled())
+            self.assertTrue(
+                any(m.get("type") == "jump_history_changed" and m.get("canJumpBack") is False for m in broadcasted)
+            )
+
+            # 3. PC 側でリンクジャンプ後、iPad 側の戻るボタン ("jump_back") で元のページへ戻れること
+            broadcasted.clear()
+            win.controller.jump_to_page(8)
+            self.app.processEvents()
+            self.assertEqual(win.controller.current_page, 8)
+            self.assertTrue(
+                any(m.get("type") == "jump_history_changed" and m.get("canJumpBack") is True for m in broadcasted)
+            )
+
+            broadcasted.clear()
+            win.web_server._handle_client_message({"type": "jump_back"})
+            self.app.processEvents()
+            self.assertEqual(win.controller.current_page, 0)
+            self.assertFalse(win.controller.can_jump_back)
+            self.assertFalse(win.slide_view.btn_jump_back.isEnabled())
+            self.assertTrue(
+                any(m.get("type") == "jump_history_changed" and m.get("canJumpBack") is False for m in broadcasted)
+            )
+        finally:
+            win.close()
+
+    def test_web_html_has_jump_back_button_and_link_jump(self):
+        self.assertIn('id="btn-jump-back"', HTML_CONTENT)
+        self.assertIn("function updateJumpBackUI(canJumpBack)", HTML_CONTENT)
+        self.assertIn("sendWS({ type: 'jump_to_page', page: link.page });", HTML_CONTENT)
+        self.assertIn("sendWS({ type: 'jump_back' });", HTML_CONTENT)
 
 
 if __name__ == "__main__":

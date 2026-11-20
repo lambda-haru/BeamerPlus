@@ -1,7 +1,13 @@
 from dataclasses import dataclass, field
 import math
-from PySide6.QtCore import QObject, Signal, Qt
-from PySide6.QtGui import QColor, QPainterPath
+import time
+from PySide6.QtCore import QObject, Signal, Qt, QPointF
+from PySide6.QtGui import QColor, QPainterPath, QPainter, QPen, QBrush
+
+
+LASER_TRAIL_GRACE_DURATION = 0.5  # 離してからフェード開始までの猶予時間（秒）
+LASER_TRAIL_FADE_DURATION = 0.25  # フェードアウト所要時間（秒）
+OBJECT_ERASER_HIT_RADIUS = 0.012  # オブジェクト消しゴムの固定ヒット判定半径（太さ設定に非依存）
 
 
 @dataclass
@@ -44,6 +50,164 @@ def create_smooth_path(points: list[tuple[float, ...]], origin_x: float, origin_
         path.lineTo(last_x, last_y)
 
     return path
+
+
+class LaserTrailManager:
+    """レーザーポインタの軌跡（押下中保持・連続描画猶予・フェード中復帰・一斉フェードアウト）を管理するクラス"""
+
+    def __init__(
+        self,
+        grace_duration: float = LASER_TRAIL_GRACE_DURATION,
+        fade_duration: float = LASER_TRAIL_FADE_DURATION,
+        min_point_dist_sq: float = 1e-7,
+    ):
+        self.grace_duration = grace_duration
+        self.fade_duration = fade_duration
+        self.min_point_dist_sq = min_point_dist_sq
+        self.is_down: bool = False
+        self.current_trail: list[tuple[float, float]] = []
+        self.held_trails: list[list[tuple[float, float]]] = []
+        self.last_release_time: float | None = None
+
+    def has_active_trails(self) -> bool:
+        return bool(self.current_trail or self.held_trails)
+
+    def _prune_if_expired(self, now: float) -> None:
+        if not self.is_down and self.held_trails and self.last_release_time is not None:
+            if (now - self.last_release_time) >= (self.grace_duration + self.fade_duration - 1e-9):
+                self.held_trails = []
+                self.last_release_time = None
+
+    def _finish_current_trail(self, now: float) -> None:
+        if self.current_trail:
+            self.held_trails.append(self.current_trail)
+            self.current_trail = []
+            self.last_release_time = now
+
+    def update(self, nx: float, ny: float, visible: bool, is_down: bool, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        self._prune_if_expired(now)
+
+        prev_down = self.is_down
+        if visible and is_down:
+            self.is_down = True
+            # 猶予中またはフェード中に再度書き込みがあれば、残っている軌跡を不透明度100%へ復活させて維持
+            self.last_release_time = None
+            if not prev_down or not self.current_trail:
+                self.current_trail = [(nx, ny)]
+            else:
+                lx, ly = self.current_trail[-1]
+                dx = nx - lx
+                dy = ny - ly
+                if (dx * dx + dy * dy) >= self.min_point_dist_sq:
+                    self.current_trail.append((nx, ny))
+        else:
+            self.is_down = False
+            if prev_down:
+                self._finish_current_trail(now)
+
+        return self.has_active_trails()
+
+    def tick(self, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        self._prune_if_expired(now)
+        return self.has_active_trails()
+
+    def get_render_trails(self, now: float | None = None) -> list[tuple[list[tuple[float, float]], float]]:
+        now = time.monotonic() if now is None else now
+        self._prune_if_expired(now)
+
+        if self.is_down or self.last_release_time is None:
+            held_alpha = 1.0
+        else:
+            elapsed = now - self.last_release_time
+            if elapsed <= self.grace_duration:
+                held_alpha = 1.0
+            elif self.fade_duration <= 0.0:
+                held_alpha = 0.0
+            else:
+                held_alpha = max(0.0, min(1.0, 1.0 - (elapsed - self.grace_duration) / self.fade_duration))
+
+        trails: list[tuple[list[tuple[float, float]], float]] = []
+        if held_alpha > 0.0:
+            for pts in self.held_trails:
+                if pts:
+                    trails.append((pts, held_alpha))
+
+        if self.current_trail:
+            trails.append((self.current_trail, 1.0))
+
+        return trails
+
+    def clear(self) -> None:
+        self.is_down = False
+        self.current_trail = []
+        self.held_trails = []
+        self.last_release_time = None
+
+
+def draw_laser_trails(
+    painter: QPainter,
+    trails: list[tuple[list[tuple[float, float]], float]],
+    origin_x: float,
+    origin_y: float,
+    width: float,
+    height: float,
+) -> None:
+    """レーザーポインタの軌跡（単一点ドットおよび滑らかな曲線ストローク）を描画する"""
+    if not trails or width <= 0 or height <= 0:
+        return
+
+    base_dim = min(width, height)
+    base_w = max(4.0, base_dim * 0.006)
+
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    for stroke_pts, fade_alpha in trails:
+        if not stroke_pts or fade_alpha <= 0.0:
+            continue
+
+        glow_alpha = int(120 * fade_alpha)
+        core_alpha = int(245 * fade_alpha)
+        glow_color = QColor(255, 30, 30, glow_alpha)
+        core_color = QColor(255, 90, 90, core_alpha)
+
+        if len(stroke_pts) == 1:
+            px = origin_x + stroke_pts[0][0] * width
+            py = origin_y + stroke_pts[0][1] * height
+            pt = QPointF(px, py)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(glow_color))
+            painter.drawEllipse(pt, base_w * 1.2, base_w * 1.2)
+            painter.setBrush(QBrush(core_color))
+            painter.drawEllipse(pt, base_w * 0.5, base_w * 0.5)
+            continue
+
+        smooth_path = create_smooth_path(stroke_pts, origin_x, origin_y, width, height)
+
+        glow_pen = QPen(
+            glow_color,
+            base_w * 2.4,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+        painter.setPen(glow_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.strokePath(smooth_path, glow_pen)
+
+        core_pen = QPen(
+            core_color,
+            base_w,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+        painter.setPen(core_pen)
+        painter.strokePath(smooth_path, core_pen)
+
+    painter.restore()
 
 
 @dataclass
@@ -554,6 +718,43 @@ class PresentationController(QObject):
         target_page = self.get_canonical_page(page_index)
         return self.page_texts.get(target_page, [])
 
+    @staticmethod
+    def _erase_in_lists(
+        strokes: list[Stroke],
+        texts: list[TextItem],
+        center: tuple[float, float],
+        threshold: float,
+        aspect_ratio: float,
+        mode: str,
+    ) -> tuple[list[Stroke], bool, list[TextItem], bool]:
+        text_threshold = OBJECT_ERASER_HIT_RADIUS if mode == "stroke" else threshold
+        remaining_texts: list[TextItem] = []
+        text_erased = False
+        for t_item in texts:
+            if text_intersects_circle(t_item, center, text_threshold, aspect_ratio):
+                text_erased = True
+            else:
+                remaining_texts.append(t_item)
+
+        new_strokes: list[Stroke] = []
+        stroke_erased = False
+        if mode == "stroke":
+            for stroke in strokes:
+                hit_r = OBJECT_ERASER_HIT_RADIUS + (stroke.width_ratio * 0.5)
+                if stroke_intersects_circle(stroke, center, hit_r, aspect_ratio):
+                    stroke_erased = True
+                else:
+                    new_strokes.append(stroke)
+        else:
+            for stroke in strokes:
+                if not stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
+                    new_strokes.append(stroke)
+                else:
+                    stroke_erased = True
+                    new_strokes.extend(clip_stroke_by_circle(stroke, center, threshold, aspect_ratio))
+
+        return new_strokes, stroke_erased, remaining_texts, text_erased
+
     def erase_at_point(
         self,
         norm_x: float,
@@ -564,114 +765,47 @@ class PresentationController(QObject):
     ) -> bool:
         """
         消しゴム処理:
-        - mode == "stroke" の場合: オブジェクト消しゴム（触れたストローク全体を削除）
+        - mode == "stroke" の場合: オブジェクト消しゴム（太さに依存しない固定ヒット判定で線全体を削除）
         - mode == "partial" の場合: 通常消しゴム（円の範囲内のみを部分消去・分割）
-        - テキスト: 消しゴムの円とバウンディングボックスが交差したテキストを削除
+        - テキスト: ヒット判定範囲とバウンディングボックスが交差したテキストを削除
         """
         center = (norm_x, norm_y)
         erased_anything = False
         mode = override_mode if override_mode else self.eraser_mode
 
         if self.is_sketchbook:
-            has_strokes = bool(self.sketchbook_strokes)
-            has_texts = bool(self.sketchbook_texts)
-            if not has_strokes and not has_texts:
+            if not self.sketchbook_strokes and not self.sketchbook_texts:
                 return False
-
-            if has_texts:
-                remaining_texts = []
-                text_erased = False
-                for t_item in self.sketchbook_texts:
-                    if text_intersects_circle(t_item, center, threshold, aspect_ratio):
-                        text_erased = True
-                    else:
-                        remaining_texts.append(t_item)
-                if text_erased:
-                    self.sketchbook_texts = remaining_texts
-                    self.texts_updated.emit(-1)
-                    erased_anything = True
-
-            if has_strokes:
-                if mode == "stroke":
-                    remaining_strokes = []
-                    erased = False
-                    for stroke in self.sketchbook_strokes:
-                        if stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
-                            erased = True
-                        else:
-                            remaining_strokes.append(stroke)
-                    if erased:
-                        self.sketchbook_strokes = remaining_strokes
-                        self.strokes_updated.emit(-1)
-                        erased_anything = True
-                else:
-                    new_strokes: list[Stroke] = []
-                    erased_any = False
-                    for stroke in self.sketchbook_strokes:
-                        if not stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
-                            new_strokes.append(stroke)
-                        else:
-                            erased_any = True
-                            clipped = clip_stroke_by_circle(stroke, center, threshold, aspect_ratio)
-                            new_strokes.extend(clipped)
-                    if erased_any:
-                        self.sketchbook_strokes = new_strokes
-                        self.strokes_updated.emit(-1)
-                        erased_anything = True
+            new_strokes, stroke_erased, new_texts, text_erased = self._erase_in_lists(
+                self.sketchbook_strokes, self.sketchbook_texts, center, threshold, aspect_ratio, mode
+            )
+            if text_erased:
+                self.sketchbook_texts = new_texts
+                self.texts_updated.emit(-1)
+                erased_anything = True
+            if stroke_erased:
+                self.sketchbook_strokes = new_strokes
+                self.strokes_updated.emit(-1)
+                erased_anything = True
             return erased_anything
 
         target_page = self.get_canonical_page(self.current_page)
-        has_strokes = target_page in self.page_strokes and bool(self.page_strokes[target_page])
-        has_texts = target_page in self.page_texts and bool(self.page_texts[target_page])
-        if not has_strokes and not has_texts:
+        page_strokes = self.page_strokes.get(target_page, [])
+        page_texts = self.page_texts.get(target_page, [])
+        if not page_strokes and not page_texts:
             return False
 
-        # 1. テキスト消去判定
-        if has_texts:
-            remaining_texts = []
-            text_erased = False
-            for t_item in self.page_texts[target_page]:
-                if text_intersects_circle(t_item, center, threshold, aspect_ratio):
-                    text_erased = True
-                else:
-                    remaining_texts.append(t_item)
-            if text_erased:
-                self.page_texts[target_page] = remaining_texts
-                self.texts_updated.emit(self.current_page)
-                erased_anything = True
-
-        # 2. ストローク消去判定
-        if has_strokes:
-            if mode == "stroke":
-                # オブジェクト消しゴム（線分交差判定）
-                remaining_strokes = []
-                erased = False
-                for stroke in self.page_strokes[target_page]:
-                    if stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
-                        erased = True
-                    else:
-                        remaining_strokes.append(stroke)
-                if erased:
-                    self.page_strokes[target_page] = remaining_strokes
-                    self.strokes_updated.emit(self.current_page)
-                    erased_anything = True
-            else:
-                # 通常消しゴム（部分消去）
-                new_page_strokes: list[Stroke] = []
-                erased_any = False
-
-                for stroke in self.page_strokes[target_page]:
-                    if not stroke_intersects_circle(stroke, center, threshold, aspect_ratio):
-                        new_page_strokes.append(stroke)
-                    else:
-                        erased_any = True
-                        clipped = clip_stroke_by_circle(stroke, center, threshold, aspect_ratio)
-                        new_page_strokes.extend(clipped)
-
-                if erased_any:
-                    self.page_strokes[target_page] = new_page_strokes
-                    self.strokes_updated.emit(self.current_page)
-                    erased_anything = True
+        new_strokes, stroke_erased, new_texts, text_erased = self._erase_in_lists(
+            page_strokes, page_texts, center, threshold, aspect_ratio, mode
+        )
+        if text_erased:
+            self.page_texts[target_page] = new_texts
+            self.texts_updated.emit(self.current_page)
+            erased_anything = True
+        if stroke_erased:
+            self.page_strokes[target_page] = new_strokes
+            self.strokes_updated.emit(self.current_page)
+            erased_anything = True
 
         return erased_anything
 
