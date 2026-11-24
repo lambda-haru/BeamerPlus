@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox, QToolBar, QPushButton, QLabel, QFrame,
     QApplication, QSizePolicy
 )
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPainter, QColor, QPen, QBrush, QFont, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPainter, QColor, QPen, QBrush, QFont, QPixmap, QScreen
 
 from beamerplus.PdfReader import PdfReader
 from beamerplus.DrawingModel import PresentationController, create_smooth_path
@@ -13,7 +13,12 @@ from beamerplus.ThumbnailBar import ThumbnailBar
 from beamerplus.BookmarkDrawer import BookmarkDrawer
 from beamerplus.SimpleView import SimpleView
 from beamerplus.NotePanel import NotePanel
-from beamerplus.Viewer import Viewer
+from beamerplus.Viewer import (
+    Viewer,
+    place_viewer_on_screen,
+    place_viewer_windowed,
+    select_projector_screen,
+)
 from beamerplus.WebServer import WebServer, WebBridge
 from beamerplus.IpadDialog import IpadDialog
 
@@ -244,6 +249,13 @@ class MainWindow(QMainWindow):
         act_proj_fullscreen.triggered.connect(self.fullscreen_viewer)
         pres_menu.addAction(act_proj_fullscreen)
 
+        self.projector_placement_menu = pres_menu.addMenu("プロジェクタウィンドウの配置(&L)")
+        self.projector_placement_menu.aboutToShow.connect(self._populate_projector_placement_menu)
+        if not self.viewer:
+            self.projector_placement_menu.setEnabled(False)
+
+        pres_menu.addSeparator()
+
         act_blank = QAction("画面を暗転 (ブラックアウト)", self)
         act_blank.setShortcut("B")
         act_blank.triggered.connect(self.toggle_blank_screen)
@@ -426,6 +438,65 @@ class MainWindow(QMainWindow):
         if self.viewer:
             self.viewer.show()
             self.viewer.toggle_fullscreen()
+
+    def _populate_projector_placement_menu(self):
+        """現在のモニター構成に応じてプロジェクタウィンドウの配置先メニューを構築"""
+        menu = self.projector_placement_menu
+        menu.clear()
+
+        if not self.viewer:
+            return
+
+        app = QApplication.instance()
+        if not app:
+            return
+
+        screens = app.screens()
+        primary_screen = app.primaryScreen()
+        current_screen = self.viewer.screen()
+
+        act_auto = QAction("自動配置（サブモニターへ全画面）", self)
+        act_auto.triggered.connect(self.auto_place_viewer)
+        menu.addAction(act_auto)
+
+        if screens:
+            menu.addSeparator()
+
+        for idx, screen in enumerate(screens):
+            geom = screen.geometry()
+            name = screen.name()
+            if name:
+                label = f"ディスプレイ {idx + 1}: {name} ({geom.width()}×{geom.height()})"
+            else:
+                label = f"ディスプレイ {idx + 1} ({geom.width()}×{geom.height()})"
+            if screen == primary_screen:
+                label += " [メイン]"
+
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(self.viewer.isVisible() and current_screen == screen)
+            action.triggered.connect(lambda checked=False, s=screen: self.place_viewer_on_screen(s))
+            menu.addAction(action)
+
+    def auto_place_viewer(self):
+        """起動時と同じルール（プライマリ以外の最小インデックス画面）でプロジェクタ画面を配置"""
+        if not self.viewer:
+            return
+        app = QApplication.instance()
+        if not app:
+            return
+        primary_screen = app.primaryScreen()
+        projector_screen = select_projector_screen(app.screens(), primary_screen)
+        if primary_screen is not None and projector_screen is not None:
+            place_viewer_on_screen(self.viewer, projector_screen, fullscreen=True)
+        else:
+            place_viewer_windowed(self.viewer, screen=primary_screen)
+
+    def place_viewer_on_screen(self, screen: QScreen):
+        """プロジェクタウィンドウを指定モニターに全画面配置"""
+        if not self.viewer or screen is None:
+            return
+        place_viewer_on_screen(self.viewer, screen, fullscreen=True)
 
     def toggle_blank_screen(self):
         self.controller.toggle_blank()

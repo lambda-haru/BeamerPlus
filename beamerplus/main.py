@@ -1,10 +1,16 @@
 import sys
 import os
 from PySide6.QtCore import Qt, QLoggingCategory, qInstallMessageHandler, QtMsgType
+from PySide6.QtGui import QScreen
 from PySide6.QtWidgets import QApplication
 
 from beamerplus.MainWindow import MainWindow
-from beamerplus.Viewer import Viewer
+from beamerplus.Viewer import (
+    Viewer,
+    place_viewer_on_screen,
+    place_viewer_windowed,
+    select_projector_screen,
+)
 
 # 1. QtWayland textinput などの不要な警告・デバッグログを抑制
 os.environ.setdefault(
@@ -34,6 +40,33 @@ def _qt_message_filter(msg_type, context, message):
 qInstallMessageHandler(_qt_message_filter)
 
 
+def select_startup_screens(app: QApplication) -> tuple[QScreen | None, QScreen | None]:
+    """発表者画面用 (primaryScreen) とプロジェクタ画面用のスクリーンを選択する。"""
+    primary_screen = app.primaryScreen()
+    if primary_screen is None:
+        return None, None
+
+    projector_screen = select_projector_screen(app.screens(), primary_screen)
+    return primary_screen, projector_screen
+
+
+def place_startup_windows(app: QApplication, viewer: Viewer, main_window: MainWindow) -> None:
+    """モニター構成に応じて発表者画面とプロジェクタ画面を配置する。"""
+    primary_screen, projector_screen = select_startup_screens(app)
+
+    if primary_screen is not None and projector_screen is not None:
+        # プライマリ以外の画面のうち最もインデックスが小さいものにViewerを配置して全画面表示
+        place_viewer_on_screen(viewer, projector_screen, fullscreen=True)
+
+        # プライマリ画面に発表者ウィンドウを配置
+        main_window.setGeometry(primary_screen.geometry().adjusted(50, 50, -50, -50))
+        main_window.show()
+    else:
+        # 単一画面の場合は両方をウィンドウ表示
+        place_viewer_windowed(viewer, width=800, height=600)
+        main_window.show()
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("BeamerPlus")
@@ -43,23 +76,7 @@ def main():
     main_window = MainWindow(viewer=viewer)
 
     # マルチモニターのチェックと配置
-    screens = app.screens()
-    if len(screens) > 1:
-        # 2番目の画面がある場合はViewerをそちらに配置して全画面表示
-        second_screen = screens[1]
-        geom = second_screen.geometry()
-        viewer.setGeometry(geom)
-        viewer.show()
-        viewer.showFullScreen()
-
-        # メイン画面に発表者ウィンドウを配置
-        main_window.setGeometry(screens[0].geometry().adjusted(50, 50, -50, -50))
-        main_window.show()
-    else:
-        # 単一画面の場合は両方をウィンドウ表示
-        viewer.resize(800, 600)
-        viewer.show()
-        main_window.show()
+    place_startup_windows(app, viewer, main_window)
 
     # コマンドライン引数にPDFが指定されていたら自動でロード
     pdf_path = None

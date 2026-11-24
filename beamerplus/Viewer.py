@@ -1,4 +1,5 @@
 import os
+from collections.abc import Sequence
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QTimer, QUrl
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
@@ -6,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import (
     QPixmap, QPainter, QResizeEvent, QKeyEvent, QMouseEvent, QColor, QPen,
-    QPainterPath, QRadialGradient, QBrush, QFont, QDesktopServices
+    QPainterPath, QRadialGradient, QBrush, QFont, QDesktopServices, QScreen
 )
 
 from beamerplus.DrawingModel import (
@@ -17,6 +18,60 @@ from beamerplus.PdfReader import PdfLink
 
 # スライド短辺に対するポインタ半径の比率 (視認性の高い大きめのレーザーポインタ)
 POINTER_RADIUS_RATIO = 0.018
+
+
+def select_projector_screen(
+    screens: Sequence[QScreen],
+    primary_screen: QScreen | None,
+) -> QScreen | None:
+    """screens のうち primary_screen 以外で最もインデックスが小さいものを返す。"""
+    if primary_screen is None:
+        return None
+    return next((screen for screen in screens if screen != primary_screen), None)
+
+
+def place_viewer_on_screen(
+    viewer: "Viewer",
+    screen: QScreen,
+    fullscreen: bool = True,
+) -> None:
+    """プロジェクタ用ウィンドウを指定スクリーンに配置する。"""
+    geom = screen.geometry()
+    if viewer.isFullScreen() and (viewer.screen() != screen or viewer.geometry() != geom):
+        viewer.showNormal()
+
+    if isinstance(screen, QScreen) and viewer.screen() != screen:
+        viewer.setScreen(screen)
+
+    viewer.setGeometry(geom)
+    viewer.show()
+    if fullscreen:
+        viewer.showFullScreen()
+    viewer.fit_view()
+
+
+def place_viewer_windowed(
+    viewer: "Viewer",
+    screen: QScreen | None = None,
+    width: int = 800,
+    height: int = 600,
+) -> None:
+    """プロジェクタ用ウィンドウを通常ウィンドウとして表示する。"""
+    if viewer.isFullScreen():
+        viewer.showNormal()
+
+    if screen is not None:
+        if isinstance(screen, QScreen) and viewer.screen() != screen:
+            viewer.setScreen(screen)
+        avail = screen.availableGeometry() if hasattr(screen, "availableGeometry") else screen.geometry()
+        x = avail.x() + max(0, (avail.width() - width) // 2)
+        y = avail.y() + max(0, (avail.height() - height) // 2)
+        viewer.setGeometry(x, y, width, height)
+    else:
+        viewer.resize(width, height)
+
+    viewer.show()
+    viewer.fit_view()
 
 
 class ViewerGraphicsView(QGraphicsView):
